@@ -1,0 +1,34 @@
+ {
+  "name": "tests",
+  "version": "0.1.0",
+  "dependencies": [
+    {
+      "name": "daxa"
+    },
+    {
+      "name": "glfw3",
+      "features": [
+        "xlib",
+        "wayland"
+      ]
+    },
+    {
+      "name": "imgui",
+      "features": [
+          "glfw-binding",
+          "docking-experimental"
+        ]
+    },
+    "glm",
+    "stb",
+    "fastgltf"
+  ],
+  "vcpkg-configuration": {
+    "overlay-ports": [
+      "/home/lukas/dev/repos/Daxa/cmake/vcpkg-port",
+      "/home/lukas/dev/repos/Daxa/cmake/vcpkg-overlay-ports/dxc",
+      "/home/lukas/dev/repos/Daxa/cmake/vcpkg-overlay-ports/glfw3",
+      "/home/lukas/dev/repos/Daxa/cmake/vcpkg-overlay-ports/fsr2"
+    ]
+  }
+}

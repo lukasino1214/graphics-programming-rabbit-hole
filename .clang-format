@@ -1,0 +1,29 @@
+# # AllowShortIfStatementsOnASingleLine: false
+# # AllowShortCaseLabelsOnASingleLine: true
+# # AllowShortBlocksOnASingleLine: false
+
+Language: Cpp
+BasedOnStyle: LLVM
+
+UseTab: Never
+TabWidth: 4
+IndentWidth: 4
+AccessModifierOffset: -2
+IndentCaseLabels: false
+ColumnLimit: 0
+BreakBeforeBraces: Attach
+
+SortIncludes: false
+SortUsingDeclarations: false
+
+NamespaceIndentation: All
+CompactNamespaces: false
+
+AllowShortIfStatementsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortBlocksOnASingleLine: false
+
+PointerAlignment: Left
+QualifierAlignment: Left
+Cpp11BracedListStyle: true
+IndentCaseLabels: true
