@@ -87,7 +87,7 @@ struct ForwardApp : public App {
             .format = daxa::Format::D32_SFLOAT,
             .aspect = daxa::ImageAspectFlagBits::DEPTH,
             .size = { size_x, size_y, 1 },
-            .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+            .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
         });
 
         camera.camera.resize(size_x, size_y);
@@ -410,7 +410,7 @@ struct ForwardApp : public App {
                 .format = daxa::Format::D32_SFLOAT,
                 .aspect = daxa::ImageAspectFlagBits::DEPTH,
                 .size = { size_x, size_y, 1 },
-                .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             });
 
             work_groups_x = (size_x + (size_x % 16)) / 16;

@@ -3,12 +3,63 @@
 
 #include "shared.inl"
 
+struct RenderTask {
+    struct Uses {
+        daxa::ImageComputeShaderWrite<> render_image = {};
+    } uses = {};
+
+    std::string_view name = "render";
+
+    ComputePipelineHolder* pipeline = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        u32 size_x = ti.get_device().info_image(uses.render_image.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.render_image.image()).size.y;
+
+        cmd_list.set_pipeline(*pipeline->pipeline);
+        cmd_list.push_constant(ComputeDraw{
+            .image = uses.render_image.view(),
+            .frame_dim = { size_x, size_y }
+        });
+        cmd_list.dispatch(size_x, size_y);
+    }
+};
+
+struct BlitToSwapChain {
+    struct Uses {
+        daxa::ImageTransferRead<> render_image = {};
+        daxa::ImageTransferWrite<> swapchain_image = {};
+    } uses = {};
+
+    std::string_view name = "blit render image to spawchain image";
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        u32 size_x = ti.get_device().info_image(uses.render_image.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.render_image.image()).size.y;
+
+        cmd_list.blit_image_to_image({
+            .src_image = uses.render_image.image(),
+            .src_image_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            .dst_image = uses.swapchain_image.image(),
+            .dst_image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
+            .src_offsets = {{{0, 0, 0}, {static_cast<i32>(size_x), static_cast<i32>(size_y), 1}}},
+            .dst_offsets = {{{0, 0, 0}, {static_cast<i32>(size_x), static_cast<i32>(size_y), 1}}},
+        });
+    }
+};
+
 struct BasicComputeApp : public App {
-    std::shared_ptr<daxa::ComputePipeline> compute_pipeline;
-    daxa::ImageId render_image;
+    ComputePipelineHolder compute_pipeline = {};
+    daxa::ImageId render_image = {};
+
+    daxa::TaskImage task_render_image = {};
+    daxa::TaskImage task_swapchain_image = {};
+    daxa::TaskGraph render_task_graph = {};
 
     BasicComputeApp() : App("Basic Compute Example") {
-        compute_pipeline = pipeline_manager.add_compute_pipeline(daxa::ComputePipelineCompileInfo {
+        compute_pipeline.pipeline = pipeline_manager.add_compute_pipeline(daxa::ComputePipelineCompileInfo {
             .shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/basic_compute/shader.glsl" }, },
             },
@@ -19,80 +70,58 @@ struct BasicComputeApp : public App {
         render_image = device.create_image(daxa::ImageInfo{
             .format = daxa::Format::R8G8B8A8_UNORM,
             .size = {size_x, size_y, 1},
-            .usage = daxa::ImageUsageFlagBits::SHADER_READ_WRITE | daxa::ImageUsageFlagBits::TRANSFER_SRC,
+            .usage = daxa::ImageUsageFlagBits::SHADER_STORAGE | daxa::ImageUsageFlagBits::TRANSFER_SRC,
             .name = "render_image",
         });
+
+        task_render_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&render_image, 1}},
+            .swapchain_image = false,
+            .name = "task render image"
+        }};  
+
+        task_swapchain_image = daxa::TaskImage{{.swapchain_image = true, .name = "swapchain image"}};
+
+        render_task_graph = daxa::TaskGraph({
+            .device = device,
+            .swapchain = swapchain,
+            .name = "render task graph" 
+        });
+
+        render_task_graph.use_persistent_image(task_render_image);
+        render_task_graph.use_persistent_image(task_swapchain_image);
+
+        render_task_graph.add_task(RenderTask {
+            .uses = {
+                .render_image = task_render_image,
+            },
+            .pipeline = &compute_pipeline,
+        });
+
+        render_task_graph.add_task(BlitToSwapChain {
+            .uses = {
+                .render_image = task_render_image,
+                .swapchain_image = task_swapchain_image,
+            },
+        });
+
+        render_task_graph.submit({});
+        render_task_graph.present({});
+        render_task_graph.complete({});
     }
 
     ~BasicComputeApp() {
+        device.wait_idle();
+        device.collect_garbage();
         device.destroy_image(render_image);
     }
 
     void render() {
         auto swapchain_image = swapchain.acquire_next_image();
+        task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
         if(swapchain_image.is_empty()) { return; }
 
-        auto cmd_list = device.create_command_list({
-            .name = "render command list"
-        });
-
-        cmd_list.pipeline_barrier_image_transition(daxa::ImageBarrierInfo {
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_id = render_image
-        });
-
-        cmd_list.set_pipeline(*compute_pipeline);
-        cmd_list.push_constant(ComputeDraw{
-            .image = render_image.default_view(),
-            .frame_dim = { size_x, size_y }
-        });
-        cmd_list.dispatch(size_x, size_y);
-
-        cmd_list.pipeline_barrier_image_transition(daxa::ImageBarrierInfo {
-            .dst_access = daxa::AccessConsts::ALL_GRAPHICS_READ_WRITE,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            .image_id = render_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition(daxa::ImageBarrierInfo {
-            .dst_access = daxa::AccessConsts::ALL_GRAPHICS_READ_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.blit_image_to_image({
-            .src_image = render_image,
-            .src_image_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            .dst_image = swapchain_image,
-            .dst_image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .src_offsets = {{{0, 0, 0}, {static_cast<i32>(size_x), static_cast<i32>(size_y), 1}}},
-            .dst_offsets = {{{0, 0, 0}, {static_cast<i32>(size_x), static_cast<i32>(size_y), 1}}},
-        });
-
-        cmd_list.pipeline_barrier_image_transition(daxa::ImageBarrierInfo {
-            .dst_access = daxa::AccessConsts::ALL_GRAPHICS_READ_WRITE,
-            .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::PRESENT_SRC,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.complete();
-
-        device.submit_commands({
-            .command_lists = {std::move(cmd_list)},
-            .wait_binary_semaphores = {swapchain.get_acquire_semaphore()},
-            .signal_binary_semaphores = {swapchain.get_present_semaphore()},
-            .signal_timeline_semaphores = {{swapchain.get_gpu_timeline_semaphore(), swapchain.get_cpu_timeline_value()}},
-        });
-
-        device.present_frame({
-            .wait_binary_semaphores = {swapchain.get_present_semaphore()},
-            .swapchain = swapchain,
-        });
+        render_task_graph.execute({});
     }
 
     void update() {
@@ -113,9 +142,10 @@ struct BasicComputeApp : public App {
             render_image = device.create_image(daxa::ImageInfo{
                 .format = daxa::Format::R8G8B8A8_UNORM,
                 .size = {size_x, size_y, 1},
-                .usage = daxa::ImageUsageFlagBits::SHADER_READ_WRITE | daxa::ImageUsageFlagBits::TRANSFER_SRC,
+                .usage = daxa::ImageUsageFlagBits::SHADER_STORAGE | daxa::ImageUsageFlagBits::TRANSFER_SRC,
                 .name = "render_image",
             });
+            task_render_image.set_images({.images = std::span{&render_image, 1}});
         }
     }
 };

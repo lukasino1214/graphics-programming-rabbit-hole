@@ -3,10 +3,79 @@
 
 #include "shared.inl"
 
-struct TriangleApp : public App {
+struct UploadVertexTask {
+    struct Uses {
+        daxa::BufferTransferWrite vertex_buffer = {};
+    } uses = {};
 
-    daxa::BufferId vertex_buffer;
-    std::shared_ptr<daxa::RasterPipeline> raster_pipeline;
+    std::string_view name = "upload vertices";
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+
+        auto staging_buffer_id = ti.get_device().create_buffer(daxa::BufferInfo {
+            .size = 3 * sizeof(Vertex),
+            .allocate_info = daxa::AutoAllocInfo{daxa::MemoryFlagBits::HOST_ACCESS_RANDOM},
+            .name = "staging buffer"
+        });
+
+        cmd_list.destroy_buffer_deferred(staging_buffer_id);
+
+        auto ptr = ti.get_device().get_host_address_as<Vertex>(staging_buffer_id);
+        *ptr++ = { { 0.0f, -0.5f }, { 1.0f, 0.0f, 0.0f }};
+        *ptr++ = { { 0.5f, 0.5f }, { 0.0f, 1.0f, 0.0f }};
+        *ptr++ = { { -0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f }};
+
+        cmd_list.copy_buffer_to_buffer({
+            .src_buffer = staging_buffer_id,
+            .dst_buffer = uses.vertex_buffer.buffer(),
+            .size = 3 * sizeof(Vertex),
+        });
+    }
+};
+
+struct RenderTask {
+    struct Uses {
+        daxa::BufferVertexShaderRead vertex_buffer = {};
+        daxa::ImageColorAttachment<> color_target = {};
+    } uses = {};
+
+    std::string_view name = "render";
+    RasterPipelineHolder* pipeline = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        u32 size_x = ti.get_device().info_image(uses.color_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.color_target.image()).size.y;
+        
+        cmd_list.begin_renderpass({
+            .color_attachments = {
+                {
+                    .image_view = uses.color_target.view(),
+                    .load_op = daxa::AttachmentLoadOp::CLEAR,
+                    .clear_value = std::array<daxa::f32, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+                },
+            },
+            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
+        });
+
+        cmd_list.set_pipeline(*pipeline->pipeline);
+        cmd_list.push_constant(DrawPush {
+            .vertices = ti.get_device().get_device_address(uses.vertex_buffer.buffer()),
+        });
+
+        cmd_list.draw({.vertex_count = 3});
+        cmd_list.end_renderpass();
+    }
+};
+
+struct TriangleApp : public App {
+    daxa::BufferId vertex_buffer = {};
+    RasterPipelineHolder raster_pipeline = {};
+
+    daxa::TaskBuffer task_buffer = {};
+    daxa::TaskImage task_swapchain_image = {};
+    daxa::TaskGraph render_task_graph = {};
 
     TriangleApp() : App("Triangle Example") {
         vertex_buffer = device.create_buffer(daxa::BufferInfo {
@@ -15,36 +84,52 @@ struct TriangleApp : public App {
             .name = "vertex buffer"
         });
 
-        daxa::BufferId staging_buffer = device.create_buffer({
-            .size = 3 * sizeof(Vertex),
-            .allocate_info = daxa::MemoryFlagBits::HOST_ACCESS_RANDOM,
-            .name = "staging vertex buffer"
+        task_buffer = daxa::TaskBuffer({
+            .initial_buffers = {.buffers = std::span{&vertex_buffer, 1}},
+            .name = "task buffer",
         });
 
-        auto ptr = device.get_host_address_as<Vertex>(staging_buffer);
-        *ptr++ = { { 0.0f, -0.5f }, { 1.0f, 0.0f, 0.0f }};
-        *ptr++ = { { 0.5f, 0.5f }, { 0.0f, 1.0f, 0.0f }};
-        *ptr++ = { { -0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f }};
-
-        auto cmd_list = device.create_command_list(daxa::CommandListInfo{
-            .name = "upload command list"
-        });
-        cmd_list.destroy_buffer_deferred(staging_buffer);
-
-        cmd_list.copy_buffer_to_buffer( daxa::BufferCopyInfo {
-            .src_buffer = staging_buffer,
-            .src_offset = 0,
-            .dst_buffer = vertex_buffer,
-            .dst_offset = 0,
-            .size = 3 * sizeof(Vertex)
+        auto upload_task_graph = daxa::TaskGraph({
+            .device = device,
+            .name = "upload task graph",
         });
 
-        cmd_list.complete();
-        device.submit_commands(daxa::CommandSubmitInfo {
-            .command_lists = {std::move(cmd_list)},
+        upload_task_graph.use_persistent_buffer(task_buffer);
+
+        upload_task_graph.add_task(UploadVertexTask{
+            .uses = {
+                .vertex_buffer = task_buffer,
+            },
         });
 
-        raster_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+        upload_task_graph.submit({});
+        upload_task_graph.complete({});
+        upload_task_graph.execute({});
+
+        task_swapchain_image = daxa::TaskImage{{.swapchain_image = true, .name = "swapchain image"}};
+
+        render_task_graph = daxa::TaskGraph({
+            .device = device,
+            .swapchain = swapchain,
+            .name = "render task graph" 
+        });
+
+        render_task_graph.use_persistent_buffer(task_buffer);
+        render_task_graph.use_persistent_image(task_swapchain_image);
+
+        render_task_graph.add_task(RenderTask {
+            .uses = {
+                .vertex_buffer = task_buffer,
+                .color_target = task_swapchain_image,
+            },
+            .pipeline = &raster_pipeline,
+        });
+
+        render_task_graph.submit({});
+        render_task_graph.present({});
+        render_task_graph.complete({});
+
+        raster_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/triangle/shader.glsl" }, },
             },
@@ -60,59 +145,17 @@ struct TriangleApp : public App {
     }
 
     ~TriangleApp() {
+        device.wait_idle();
+        device.collect_garbage();
         device.destroy_buffer(vertex_buffer);
     }
 
     void render() {
         auto swapchain_image = swapchain.acquire_next_image();
+        task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
         if(swapchain_image.is_empty()) { return; }
 
-        auto cmd_list = device.create_command_list({
-            .name = "render command list"
-        });
-
-        cmd_list.pipeline_barrier_image_transition(daxa::ImageBarrierInfo {
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
-            .color_attachments = { daxa::RenderAttachmentInfo {
-                .image_view = swapchain_image.default_view(),
-                .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
-            }},
-            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
-        });
-        cmd_list.set_pipeline(*raster_pipeline);
-        cmd_list.push_constant(DrawPush{
-            .vertices = device.get_device_address(vertex_buffer)
-        });
-        cmd_list.draw({.vertex_count = 3});
-        cmd_list.end_renderpass();
-
-        cmd_list.pipeline_barrier_image_transition(daxa::ImageBarrierInfo {
-            .dst_access = daxa::AccessConsts::ALL_GRAPHICS_READ_WRITE,
-            .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::PRESENT_SRC,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.complete();
-
-        device.submit_commands({
-            .command_lists = {std::move(cmd_list)},
-            .wait_binary_semaphores = {swapchain.get_acquire_semaphore()},
-            .signal_binary_semaphores = {swapchain.get_present_semaphore()},
-            .signal_timeline_semaphores = {{swapchain.get_gpu_timeline_semaphore(), swapchain.get_cpu_timeline_value()}},
-        });
-
-        device.present_frame({
-            .wait_binary_semaphores = {swapchain.get_present_semaphore()},
-            .swapchain = swapchain,
-        });
+        render_task_graph.execute({});
     }
 
     void update() {

@@ -7,27 +7,262 @@
 
 #include "shared.inl"
 
+struct UploadMeshData {
+    struct Uses {
+        daxa::BufferTransferWrite vertex_buffer = {};
+        daxa::BufferTransferWrite index_buffer = {};
+    } uses = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::BufferId vertex_staging_buffer = ti.get_device().create_buffer({
+            .size = 4 * sizeof(Vertex),
+            .allocate_info = daxa::AllocateInfo{daxa::MemoryFlagBits::HOST_ACCESS_RANDOM},
+            .name = "staging vertex buffer"
+        });
+
+        daxa::BufferId index_staging_buffer = ti.get_device().create_buffer({
+            .size = 6 * sizeof(u32),
+            .allocate_info = daxa::AllocateInfo{daxa::MemoryFlagBits::HOST_ACCESS_RANDOM},
+            .name = "staging index buffer"
+        });
+
+        daxa::CommandList cmd_list = ti.get_command_list();
+        cmd_list.destroy_buffer_deferred(vertex_staging_buffer);
+        cmd_list.destroy_buffer_deferred(index_staging_buffer);
+
+        {
+            auto ptr = ti.get_device().get_host_address_as<Vertex>(vertex_staging_buffer);
+            *ptr++ = { { 0.5f, 0.5f }, };
+            *ptr++ = { { 0.5f, -0.5f }, };
+            *ptr++ = { { -0.5f, -0.5f }, };
+            *ptr++ = { { -0.5f, 0.5f }, };
+        }
+
+        {
+            auto ptr = ti.get_device().get_host_address_as<u32>(index_staging_buffer);
+            *ptr++ = 0;
+            *ptr++ = 1;
+            *ptr++ = 3;
+            *ptr++ = 1;
+            *ptr++ = 2;
+            *ptr++ = 3;
+        }
+
+        cmd_list.copy_buffer_to_buffer( daxa::BufferCopyInfo {
+            .src_buffer = vertex_staging_buffer,
+            .src_offset = 0,
+            .dst_buffer = uses.vertex_buffer.buffer(),
+            .dst_offset = 0,
+            .size = 4 * sizeof(Vertex)
+        });
+
+        cmd_list.copy_buffer_to_buffer( daxa::BufferCopyInfo {
+            .src_buffer = index_staging_buffer,
+            .src_offset = 0,
+            .dst_buffer = uses.index_buffer.buffer(),
+            .dst_offset = 0,
+            .size = 6 * sizeof(u32)
+        });
+    }
+};
+
+struct RenderTask {
+    struct Uses {
+        daxa::ImageColorAttachment<> render_image = {};
+        daxa::ImageColorAttachment<> bloom_image = {};
+        daxa::BufferVertexShaderRead vertex_buffer = {};
+        daxa::BufferVertexShaderRead index_buffer = {};
+    } uses = {};
+
+    std::string_view name = "render";
+    RasterPipelineHolder* pipeline = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        daxa::Device device = ti.get_device();
+        u32 size_x = ti.get_device().info_image(uses.render_image.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.render_image.image()).size.y;
+
+        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
+            .color_attachments = { 
+                daxa::RenderAttachmentInfo {
+                    .image_view = uses.render_image.view(),
+                    .load_op = daxa::AttachmentLoadOp::CLEAR,
+                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f},
+                }, 
+                daxa::RenderAttachmentInfo {
+                    .image_view = uses.bloom_image.view(),
+                    .load_op = daxa::AttachmentLoadOp::CLEAR,
+                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f},
+                }
+            },
+            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
+        });
+        cmd_list.set_pipeline(*pipeline->pipeline);
+        cmd_list.push_constant(DrawPush {
+            .vertices = device.get_device_address(uses.vertex_buffer.buffer())
+        });
+        cmd_list.set_index_buffer(uses.index_buffer.buffer(), 0);
+        cmd_list.draw_indexed({ .index_count = 6});
+        cmd_list.end_renderpass();
+    }
+};
+
+struct DownSampleTask {
+    struct Uses {
+        daxa::ImageShaderRead<> higher_mip = {};
+        daxa::ImageColorAttachment<> lower_mip = {};
+    } uses = {};
+
+    std::string_view name = "down sample";
+    RasterPipelineHolder* pipeline = {};
+    daxa::SamplerId sampler_id = {};
+    f32* filter_radius = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+
+        auto higher_size = ti.get_device().info_image(uses.higher_mip.image()).size;
+        auto lower_size = ti.get_device().info_image(uses.lower_mip.image()).size;
+
+        cmd_list.begin_renderpass({
+            .color_attachments = {
+                {
+                    .image_view = uses.lower_mip.view(),
+                    .load_op = daxa::AttachmentLoadOp::CLEAR,
+                    .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
+                },
+            },
+            .render_area = {.x = 0, .y = 0, .width = lower_size.x, .height = lower_size.y },
+        });
+        cmd_list.set_pipeline(*pipeline->pipeline);
+        cmd_list.push_constant(BloomPush {
+            .src_resolution = { static_cast<f32>(higher_size.x), static_cast<f32>(higher_size.y) },
+            .filter_radius = *filter_radius,
+            .image_view_id = uses.higher_mip.view(),
+            .sampler_id = sampler_id,
+        });
+        cmd_list.draw({ .vertex_count = 3 });
+        cmd_list.end_renderpass();
+    }
+};
+
+struct UpSampleTask {
+    struct Uses {
+        daxa::ImageShaderRead<> lower_mip = {};
+        daxa::ImageColorAttachment<> higher_mip = {};
+    } uses = {};
+
+    std::string_view name = "up sample";
+    RasterPipelineHolder* pipeline = {};
+    daxa::SamplerId sampler_id = {};
+    f32* filter_radius = {};
+
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+
+        auto higher_size = ti.get_device().info_image(uses.higher_mip.image()).size;
+        auto lower_size = ti.get_device().info_image(uses.lower_mip.image()).size;
+
+        cmd_list.begin_renderpass({
+                .color_attachments = {
+                    {
+                        .image_view = uses.higher_mip.view(),
+                        .load_op = daxa::AttachmentLoadOp::CLEAR,
+                        .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
+                    },
+                },
+                .render_area = {.x = 0, .y = 0, .width = higher_size.x, .height = higher_size.y },
+            });
+            cmd_list.set_pipeline(*pipeline->pipeline);
+            cmd_list.push_constant(BloomPush {
+                .src_resolution = { static_cast<f32>(lower_size.x), static_cast<f32>(lower_size.y) },
+                .filter_radius = *filter_radius,
+                .image_view_id = uses.lower_mip.view(),
+                .sampler_id = sampler_id
+            });
+            cmd_list.draw({ .vertex_count = 3 });
+            cmd_list.end_renderpass();
+    }
+};
+
+
+struct CompositionTask {
+    struct Uses {
+        daxa::ImageColorAttachment<> render_target = {};
+        daxa::ImageShaderRead<> render_image = {};
+        daxa::ImageShaderRead<> bloom_image = {};
+    } uses = {};
+
+    std::string_view name = "composition";
+    RasterPipelineHolder* pipeline = {};
+    daxa::ImGuiRenderer imgui_renderer = {};
+    daxa::SamplerId sampler_id = {};
+    f32* bloom_strength = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        u32 size_x = ti.get_device().info_image(uses.render_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.render_target.image()).size.y;
+
+        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
+            .color_attachments = { 
+                daxa::RenderAttachmentInfo {
+                    .image_view = uses.render_target.view(),
+                    .load_op = daxa::AttachmentLoadOp::CLEAR,
+                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f},
+                }, 
+            },
+            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
+        });
+        cmd_list.set_pipeline(*pipeline->pipeline);
+        cmd_list.push_constant(CompositionPush {
+            .render_image_view_id = uses.render_image.view(),
+            .bloom_image_view_id = uses.bloom_image.view(),
+            .sampler_id = sampler_id,
+            .bloom_strength = *bloom_strength
+        });
+        cmd_list.draw({ .vertex_count = 3});
+        cmd_list.end_renderpass();
+
+        imgui_renderer.record_commands(ImGui::GetDrawData(), cmd_list, uses.render_target.image(), size_x, size_y);
+    }
+};
+
+
 struct BloomApp : public App {
     struct BloomMip {
         glm::vec2 size;
         glm::ivec2 int_size;
         daxa::ImageId texture;
+        daxa::TaskImage task_texture;
     };
 
-    daxa::BufferId vertex_buffer;
-    daxa::BufferId index_buffer;
-    std::shared_ptr<daxa::RasterPipeline> render_pipeline;
-    std::shared_ptr<daxa::RasterPipeline> composition_pipeline;
-    daxa::ImageId render_image;
-    daxa::ImageId bloom_image;
-    daxa::SamplerId sampler_id;
+    daxa::BufferId vertex_buffer = {};
+    daxa::TaskBuffer task_vertex_buffer = {};
+    daxa::BufferId index_buffer = {};
+    daxa::TaskBuffer task_index_buffer = {};
 
-    std::shared_ptr<daxa::RasterPipeline> down_sample_pipeline;
-    std::shared_ptr<daxa::RasterPipeline> up_sample_pipeline;
+    RasterPipelineHolder render_pipeline = {};
+    RasterPipelineHolder composition_pipeline = {};
 
-    daxa::ImGuiRenderer imgui_renderer;
+    daxa::ImageId render_image = {};
+    daxa::TaskImage task_render_image = {};
+    daxa::ImageId bloom_image = {};
+    daxa::TaskImage task_bloom_image = {};
 
-    std::vector<BloomMip> mip_chain;
+    daxa::SamplerId sampler_id = {};
+
+    RasterPipelineHolder down_sample_pipeline = {};
+    RasterPipelineHolder up_sample_pipeline = {};
+
+    daxa::ImGuiRenderer imgui_renderer = {};
+
+    std::vector<BloomMip> mip_chain = {};
+
+    daxa::TaskImage task_swapchain_image = {};
+    daxa::TaskGraph render_task_graph = {};
 
     i32 mip_levels = 5;
     f32 filter_radius = 0.05f;
@@ -40,19 +275,10 @@ struct BloomApp : public App {
             .name = "vertex buffer"
         });
 
-        daxa::BufferId vertex_staging_buffer = device.create_buffer({
-            .size = 4 * sizeof(Vertex),
-            .allocate_info = daxa::MemoryFlagBits::HOST_ACCESS_RANDOM,
-            .name = "staging vertex buffer"
+        task_vertex_buffer = daxa::TaskBuffer({
+            .initial_buffers = {.buffers = std::span{&vertex_buffer, 1}},
+            .name = "task vertex buffer",
         });
-
-        {
-            auto ptr = device.get_host_address_as<Vertex>(vertex_staging_buffer);
-            *ptr++ = { { 0.5f, 0.5f }};
-            *ptr++ = { { 0.5f, -0.5f }};
-            *ptr++ = { { -0.5f, -0.5f }};
-            *ptr++ = { { -0.5f, 0.5f }};
-        }
 
         index_buffer = device.create_buffer({
             .size = 6 * sizeof(u32),
@@ -60,75 +286,53 @@ struct BloomApp : public App {
             .name = "index buffer"
         });
 
-        daxa::BufferId index_staging_buffer = device.create_buffer({
-            .size = 6 * sizeof(u32),
-            .allocate_info = daxa::MemoryFlagBits::HOST_ACCESS_RANDOM,
-            .name = "staging index buffer"
+        task_index_buffer = daxa::TaskBuffer({
+            .initial_buffers = {.buffers = std::span{&index_buffer, 1}},
+            .name = "task index buffer",
         });
 
-        {
-            auto ptr = device.get_host_address_as<u32>(index_staging_buffer);
-            *ptr++ = 0;
-            *ptr++ = 1;
-            *ptr++ = 3;
-            *ptr++ = 1;
-            *ptr++ = 2;
-            *ptr++ = 3;
-        }
-
-        auto cmd_list = device.create_command_list({.name = "upload command list"});
-
-        cmd_list.copy_buffer_to_buffer( daxa::BufferCopyInfo {
-            .src_buffer = vertex_staging_buffer,
-            .src_offset = 0,
-            .dst_buffer = vertex_buffer,
-            .dst_offset = 0,
-            .size = 4 * sizeof(Vertex)
+        auto upload_task_graph = daxa::TaskGraph({
+            .device = device,
+            .name = "upload task graph",
         });
 
-        cmd_list.copy_buffer_to_buffer( daxa::BufferCopyInfo {
-            .src_buffer = index_staging_buffer,
-            .src_offset = 0,
-            .dst_buffer = index_buffer,
-            .dst_offset = 0,
-            .size = 6 * sizeof(u32)
-        });
+        upload_task_graph.use_persistent_buffer(task_vertex_buffer);
+        upload_task_graph.use_persistent_buffer(task_index_buffer);
 
-        cmd_list.complete();
-        device.submit_commands({
-            .command_lists = {std::move(cmd_list)},
-        });
-        device.wait_idle();
-        device.destroy_buffer(vertex_staging_buffer);
-        device.destroy_buffer(index_staging_buffer);
-
-        render_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
-            .vertex_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/bloom/render.glsl" }, },
+        upload_task_graph.add_task(UploadMeshData{
+            .uses = {
+                .vertex_buffer = task_vertex_buffer,
+                .index_buffer = task_index_buffer
             },
-            .fragment_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/bloom/render.glsl" } }
-            },
-            .color_attachments = {{ .format = swapchain.get_format() }, { .format = swapchain.get_format() }},
-            .raster = {
-                .face_culling = daxa::FaceCullFlagBits::NONE
-            },
-            .push_constant_size = sizeof(DrawPush),
-        }).value();
+        });
+
+        upload_task_graph.submit({});
+        upload_task_graph.complete({});
+        upload_task_graph.execute({});
 
         render_image = device.create_image({
             .format = swapchain.get_format(),
-            .aspect = daxa::ImageAspectFlagBits::COLOR,
             .size = { size_x, size_y, 1 },
-            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
         });
+
+        task_render_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&render_image, 1}},
+            .swapchain_image = false,
+            .name = "task render image"
+        }};
 
         bloom_image = device.create_image({
             .format = swapchain.get_format(),
-            .aspect = daxa::ImageAspectFlagBits::COLOR,
             .size = { size_x, size_y, 1 },
-            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
         });
+
+        task_bloom_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&bloom_image, 1}},
+            .swapchain_image = false,
+            .name = "task bloom image"
+        }};
 
         sampler_id = device.create_sampler({
             .magnification_filter = daxa::Filter::LINEAR,
@@ -147,7 +351,21 @@ struct BloomApp : public App {
             .enable_unnormalized_coordinates = false,
         });
 
-        composition_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+        render_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+            .vertex_shader_info = daxa::ShaderCompileInfo {
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/bloom/render.glsl" }, },
+            },
+            .fragment_shader_info = daxa::ShaderCompileInfo {
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/bloom/render.glsl" } }
+            },
+            .color_attachments = {{ .format = swapchain.get_format() }, { .format = swapchain.get_format() }},
+            .raster = {
+                .face_culling = daxa::FaceCullFlagBits::NONE
+            },
+            .push_constant_size = sizeof(DrawPush),
+        }).value();
+
+        composition_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/bloom/composition.glsl" }, },
             },
@@ -161,7 +379,7 @@ struct BloomApp : public App {
             .push_constant_size = sizeof(CompositionPush),
         }).value();
 
-        down_sample_pipeline = pipeline_manager.add_raster_pipeline({
+        down_sample_pipeline.pipeline = pipeline_manager.add_raster_pipeline({
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/bloom/down_sample.glsl" }, },
             },
@@ -175,7 +393,7 @@ struct BloomApp : public App {
             .push_constant_size = sizeof(BloomPush),
         }).value();
 
-        up_sample_pipeline = pipeline_manager.add_raster_pipeline({
+        up_sample_pipeline.pipeline = pipeline_manager.add_raster_pipeline({
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/bloom/up_sample.glsl" }, },
             },
@@ -201,10 +419,15 @@ struct BloomApp : public App {
             mip.size = mip_size;
             mip.texture = device.create_image({
                 .format = swapchain.get_format(),
-                .aspect = daxa::ImageAspectFlagBits::COLOR,
                 .size = { static_cast<u32>(mip_int_size.x), static_cast<u32>(mip_int_size.y), 1 },
-                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             });
+
+            mip.task_texture = daxa::TaskImage { daxa::TaskImageInfo {
+                .initial_images = {.images = std::span{&mip.texture, 1}},
+                .swapchain_image = false,
+                .name = "task texture " + std::to_string(i) + " image"
+            }};
 
             mip_chain.push_back(std::move(mip));
         }
@@ -215,6 +438,10 @@ struct BloomApp : public App {
             .device = device,
             .format = swapchain.get_format(),
         });
+
+        task_swapchain_image = daxa::TaskImage{{.swapchain_image = true, .name = "swapchain image"}};
+
+        rebuild_task_graph();
     }
 
     ~BloomApp() {
@@ -232,260 +459,10 @@ struct BloomApp : public App {
 
     void render() {
         auto swapchain_image = swapchain.acquire_next_image();
+        task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
         if(swapchain_image.is_empty()) { return; }
 
-        auto cmd_list = device.create_command_list({.name = "render command list"});
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::NONE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_id = render_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::NONE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_id = bloom_image
-        });
-
-        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
-            .color_attachments = { 
-                daxa::RenderAttachmentInfo {
-                    .image_view = render_image.default_view(),
-                    .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f},
-                }, 
-                daxa::RenderAttachmentInfo {
-                    .image_view = bloom_image.default_view(),
-                    .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f},
-                }
-            },
-            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
-        });
-        cmd_list.set_pipeline(*render_pipeline);
-        cmd_list.push_constant(DrawPush {
-            .vertices = device.get_device_address(vertex_buffer)
-        });
-        cmd_list.set_index_buffer(index_buffer, 0);
-        cmd_list.draw_indexed({ .index_count = 6});
-        cmd_list.end_renderpass();
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_READ,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_id = render_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_READ,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_id = bloom_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::NONE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_id = mip_chain[0].texture
-        });
-
-        cmd_list.begin_renderpass({
-            .color_attachments = {
-                {
-                    .image_view = this->mip_chain[0].texture.default_view(),
-                    .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
-                },
-            },
-            .render_area = {.x = 0, .y = 0, .width = static_cast<u32>(mip_chain[0].int_size.x), .height = static_cast<u32>(mip_chain[0].int_size.y)},
-        });
-        cmd_list.set_pipeline(*down_sample_pipeline);
-        cmd_list.push_constant(BloomPush {
-            .src_resolution = { static_cast<f32>(size_x), static_cast<f32>(size_y) },
-            .filter_radius = filter_radius,
-            .image_view_id = bloom_image.default_view(),
-            .sampler_id = sampler_id,
-        });
-        cmd_list.draw({ .vertex_count = 3 });
-        cmd_list.end_renderpass();
-
-        for(u32 i = 0; i < mip_chain.size() - 1; i++) {
-            cmd_list.pipeline_barrier_image_transition({
-                .src_access = daxa::AccessConsts::NONE,
-                .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-                .src_layout = daxa::ImageLayout::UNDEFINED,
-                .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-                .image_id = mip_chain[i+1].texture
-            });
-
-            cmd_list.pipeline_barrier_image_transition({
-                .src_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-                .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_READ,
-                .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-                .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-                .image_id = mip_chain[i].texture
-            });
-
-            cmd_list.begin_renderpass({
-                .color_attachments = {
-                    {
-                        .image_view = this->mip_chain[i+1].texture.default_view(),
-                        .load_op = daxa::AttachmentLoadOp::CLEAR,
-                        .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
-                    },
-                },
-                .render_area = {.x = 0, .y = 0, .width = static_cast<u32>(mip_chain[i+1].int_size.x), .height = static_cast<u32>(mip_chain[i+1].int_size.y)},
-            });
-            cmd_list.set_pipeline(*down_sample_pipeline);
-            cmd_list.push_constant(BloomPush {
-                .src_resolution = { static_cast<f32>(mip_chain[i].int_size.x ), static_cast<f32>(mip_chain[i].int_size.y) },
-                .filter_radius = filter_radius,
-                .image_view_id = mip_chain[i].texture.default_view(),
-                .sampler_id = sampler_id
-            });
-            cmd_list.draw({ .vertex_count = 3 });
-            cmd_list.end_renderpass();
-        }
-
-        for(u32 i = mip_chain.size() - 1; i > 0; i--) {
-            cmd_list.pipeline_barrier_image_transition({
-                .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-                .src_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-                .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-                .image_id = mip_chain[i-1].texture
-            });
-
-            cmd_list.pipeline_barrier_image_transition({
-                .dst_access = daxa::AccessConsts::READ,
-                .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-                .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-                .image_id = mip_chain[i].texture
-            });
-
-            cmd_list.begin_renderpass({
-                .color_attachments = {
-                    {
-                        .image_view = mip_chain[i-1].texture.default_view(),
-                        .load_op = daxa::AttachmentLoadOp::CLEAR,
-                        .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
-                    },
-                },
-                .render_area = {.x = 0, .y = 0, .width = static_cast<u32>(mip_chain[i-1].int_size.x), .height = static_cast<u32>(mip_chain[i-1].int_size.y)},
-            });
-            cmd_list.set_pipeline(*up_sample_pipeline);
-            cmd_list.push_constant(BloomPush {
-                .src_resolution = { static_cast<f32>(mip_chain[i].int_size.x), static_cast<f32>(mip_chain[i].int_size.y) },
-                .filter_radius = filter_radius,
-                .image_view_id = mip_chain[i].texture.default_view(),
-                .sampler_id = sampler_id
-            });
-            cmd_list.draw({ .vertex_count = 3 });
-            cmd_list.end_renderpass();
-        }
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_id = bloom_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::READ,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_id = mip_chain[0].texture
-        });
-
-        cmd_list.begin_renderpass({
-            .color_attachments = {
-                {
-                    .image_view = bloom_image.default_view(),
-                    .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
-                },
-            },
-            .render_area = {.x = 0, .y = 0, .width = static_cast<u32>(size_x), .height = static_cast<u32>(size_y)},
-        });
-        cmd_list.set_pipeline(*up_sample_pipeline);
-        cmd_list.push_constant(BloomPush {
-            .src_resolution = { static_cast<f32>(mip_chain[0].int_size.x), static_cast<f32>(mip_chain[0].int_size.y) },
-            .filter_radius = filter_radius,
-            .image_view_id = mip_chain[0].texture.default_view(),
-            .sampler_id = sampler_id
-        });
-        cmd_list.draw({ .vertex_count = 3 });
-        cmd_list.end_renderpass();
-
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_id = bloom_image
-        });
-
-
-        // compose render and bloom image
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
-            .color_attachments = { 
-                daxa::RenderAttachmentInfo {
-                    .image_view = swapchain_image.default_view(),
-                    .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f},
-                }, 
-            },
-            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
-        });
-        cmd_list.set_pipeline(*composition_pipeline);
-        cmd_list.push_constant(CompositionPush {
-            .render_image_view_id = render_image.default_view(),
-            .bloom_image_view_id = bloom_image.default_view(),
-            .sampler_id = sampler_id,
-            .bloom_strength = bloom_strength
-        });
-        cmd_list.draw({ .vertex_count = 3});
-        cmd_list.end_renderpass();
-
-        imgui_renderer.record_commands(ImGui::GetDrawData(), cmd_list, swapchain_image, size_x, size_y);
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::ALL_GRAPHICS_READ_WRITE,
-            .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::PRESENT_SRC,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.complete();
-
-        device.submit_commands({
-            .command_lists = {std::move(cmd_list)},
-            .wait_binary_semaphores = {swapchain.get_acquire_semaphore()},
-            .signal_binary_semaphores = {swapchain.get_present_semaphore()},
-            .signal_timeline_semaphores = {{swapchain.get_gpu_timeline_semaphore(), swapchain.get_cpu_timeline_value()}},
-        });
-
-        device.present_frame({
-            .wait_binary_semaphores = {swapchain.get_present_semaphore()},
-            .swapchain = swapchain,
-        });
+        render_task_graph.execute({});
     }
 
     void update() {
@@ -515,13 +492,20 @@ struct BloomApp : public App {
                     mip.size = mip_size;
                     mip.texture = device.create_image({
                         .format = swapchain.get_format(),
-                        .aspect = daxa::ImageAspectFlagBits::COLOR,
                         .size = { static_cast<u32>(mip_int_size.x), static_cast<u32>(mip_int_size.y), 1 },
-                        .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                        .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
                     });
+
+                    mip.task_texture = daxa::TaskImage { daxa::TaskImageInfo {
+                        .initial_images = {.images = std::span{&mip.texture, 1}},
+                        .swapchain_image = false,
+                        .name = "task texture " + std::to_string(i) + " image"
+                    }};
 
                     mip_chain.push_back(std::move(mip));
                 }
+
+                rebuild_task_graph();
             }
             ImGui::DragFloat("filter radius", &filter_radius, 0.01f, 0.01f, 0.5f);
             ImGui::DragFloat("bloom strength", &bloom_strength, 0.10f, 0.01f, 5.0f);
@@ -531,6 +515,94 @@ struct BloomApp : public App {
 
             render();
         }
+    }
+
+    void rebuild_task_graph() {
+        render_task_graph = daxa::TaskGraph({
+            .device = device,
+            .swapchain = swapchain,
+            .name = "render task graph" 
+        });
+
+        render_task_graph.use_persistent_image(task_swapchain_image);
+        render_task_graph.use_persistent_image(task_render_image);
+        render_task_graph.use_persistent_image(task_bloom_image);
+        render_task_graph.use_persistent_buffer(task_vertex_buffer);
+        render_task_graph.use_persistent_buffer(task_index_buffer);
+
+        for(u32 i = 0; i < mip_levels; i++) {
+            render_task_graph.use_persistent_image(mip_chain[i].task_texture);
+        }
+
+        render_task_graph.add_task(RenderTask {
+            .uses = {
+                .render_image = task_render_image,
+                .bloom_image = task_bloom_image,
+                .vertex_buffer = task_vertex_buffer,
+                .index_buffer = task_index_buffer
+            },
+            .pipeline = &render_pipeline,
+        });
+
+        render_task_graph.add_task(DownSampleTask {
+            .uses = {
+                .higher_mip = task_bloom_image,
+                .lower_mip = mip_chain[0].task_texture
+            },
+            .pipeline = &down_sample_pipeline,
+            .sampler_id = sampler_id,
+            .filter_radius = &filter_radius
+        });
+
+        for(u32 i = 0; i < mip_chain.size() - 1; i++) {
+            render_task_graph.add_task(DownSampleTask {
+                .uses = {
+                    .higher_mip = mip_chain[i].task_texture,
+                    .lower_mip = mip_chain[i + 1].task_texture,
+                },
+                .pipeline = &down_sample_pipeline,
+                .sampler_id = sampler_id,
+                .filter_radius = &filter_radius
+            });
+        }
+
+        for(u32 i = mip_chain.size() - 1; i > 0; i--) {
+            render_task_graph.add_task(UpSampleTask {
+                .uses = {
+                    .lower_mip = mip_chain[i].task_texture,
+                    .higher_mip = mip_chain[i - 1].task_texture,
+                },
+                .pipeline = &up_sample_pipeline,
+                .sampler_id = sampler_id,
+                .filter_radius = &filter_radius
+            });
+        }
+
+        render_task_graph.add_task(UpSampleTask {
+            .uses = {
+                .lower_mip = mip_chain[0].task_texture,
+                .higher_mip = task_bloom_image
+            },
+            .pipeline = &up_sample_pipeline,
+            .sampler_id = sampler_id,
+            .filter_radius = &filter_radius
+        });
+
+        render_task_graph.add_task(CompositionTask {
+            .uses = {
+                .render_target = task_swapchain_image,
+                .render_image = task_render_image,
+                .bloom_image = task_bloom_image,
+            },
+            .pipeline = &composition_pipeline,
+            .imgui_renderer = imgui_renderer,
+            .sampler_id = sampler_id,
+            .bloom_strength = &bloom_strength
+        });
+
+        render_task_graph.submit({});
+        render_task_graph.present({});
+        render_task_graph.complete({});
     }
 
     void resize(u32 x, u32 y) override {
@@ -558,10 +630,15 @@ struct BloomApp : public App {
                 mip.size = mip_size;
                 mip.texture = device.create_image({
                     .format = swapchain.get_format(),
-                    .aspect = daxa::ImageAspectFlagBits::COLOR,
                     .size = { static_cast<u32>(mip_int_size.x), static_cast<u32>(mip_int_size.y), 1 },
-                    .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                    .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
                 });
+
+                mip.task_texture = daxa::TaskImage { daxa::TaskImageInfo {
+                    .initial_images = {.images = std::span{&mip.texture, 1}},
+                    .swapchain_image = false,
+                    .name = "task texture " + std::to_string(i) + " image"
+                }};
 
                 mip_chain.push_back(std::move(mip));
             }
@@ -569,18 +646,20 @@ struct BloomApp : public App {
             device.destroy_image(render_image);
             render_image = device.create_image({
                 .format = swapchain.get_format(),
-                .aspect = daxa::ImageAspectFlagBits::COLOR,
                 .size = { size_x, size_y, 1 },
-                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             });
+            task_render_image.set_images({.images = std::span{&render_image, 1}});
 
             device.destroy_image(bloom_image);
             bloom_image = device.create_image({
                 .format = swapchain.get_format(),
-                .aspect = daxa::ImageAspectFlagBits::COLOR,
                 .size = { size_x, size_y, 1 },
-                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             });
+            task_bloom_image.set_images({.images = std::span{&bloom_image, 1}});
+
+            rebuild_task_graph();
         }
     }
 };

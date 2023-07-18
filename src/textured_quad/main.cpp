@@ -7,48 +7,39 @@
 
 #include "shared.inl"
 
-struct TextureQuadApp : public App {
-    daxa::BufferId vertex_buffer;
-    daxa::BufferId index_buffer;
-    std::shared_ptr<daxa::RasterPipeline> raster_pipeline;
-    daxa::ImageId image_id;
-    daxa::SamplerId sampler_id;
+struct UploadMeshData {
+    struct Uses {
+        daxa::BufferTransferWrite vertex_buffer = {};
+        daxa::BufferTransferWrite index_buffer = {};
+    } uses = {};
 
-    TextureQuadApp() : App("Texture Quad Example") {
-        vertex_buffer = device.create_buffer({
+    void callback(daxa::TaskInterface ti) {
+        daxa::BufferId vertex_staging_buffer = ti.get_device().create_buffer({
             .size = 4 * sizeof(Vertex),
-            .allocate_info = daxa::MemoryFlagBits::DEDICATED_MEMORY,
-            .name = "vertex buffer"
-        });
-
-        daxa::BufferId vertex_staging_buffer = device.create_buffer({
-            .size = 4 * sizeof(Vertex),
-            .allocate_info = daxa::MemoryFlagBits::HOST_ACCESS_RANDOM,
+            .allocate_info = daxa::AllocateInfo{daxa::MemoryFlagBits::HOST_ACCESS_RANDOM},
             .name = "staging vertex buffer"
         });
 
+        daxa::BufferId index_staging_buffer = ti.get_device().create_buffer({
+            .size = 6 * sizeof(u32),
+            .allocate_info = daxa::AllocateInfo{daxa::MemoryFlagBits::HOST_ACCESS_RANDOM},
+            .name = "staging index buffer"
+        });
+
+        daxa::CommandList cmd_list = ti.get_command_list();
+        cmd_list.destroy_buffer_deferred(vertex_staging_buffer);
+        cmd_list.destroy_buffer_deferred(index_staging_buffer);
+
         {
-            auto ptr = device.get_host_address_as<Vertex>(vertex_staging_buffer);
+            auto ptr = ti.get_device().get_host_address_as<Vertex>(vertex_staging_buffer);
             *ptr++ = { { 0.5f, 0.5f }, { 1.0f, 1.0f }};
             *ptr++ = { { 0.5f, -0.5f }, { 1.0f, 0.0f  }};
             *ptr++ = { { -0.5f, -0.5f }, { 0.0f, 0.0f }};
             *ptr++ = { { -0.5f, 0.5f }, { 0.0f, 1.0f }};
         }
 
-        index_buffer = device.create_buffer({
-            .size = 6 * sizeof(u32),
-            .allocate_info = daxa::MemoryFlagBits::DEDICATED_MEMORY,
-            .name = "index buffer"
-        });
-
-        daxa::BufferId index_staging_buffer = device.create_buffer({
-            .size = 6 * sizeof(u32),
-            .allocate_info = daxa::MemoryFlagBits::HOST_ACCESS_RANDOM,
-            .name = "staging index buffer"
-        });
-
         {
-            auto ptr = device.get_host_address_as<u32>(index_staging_buffer);
+            auto ptr = ti.get_device().get_host_address_as<u32>(index_staging_buffer);
             *ptr++ = 0;
             *ptr++ = 1;
             *ptr++ = 3;
@@ -57,31 +48,119 @@ struct TextureQuadApp : public App {
             *ptr++ = 3;
         }
 
-        auto upload_cmd_list = device.create_command_list({.name = "upload command list"});
-
-        upload_cmd_list.copy_buffer_to_buffer( daxa::BufferCopyInfo {
+        cmd_list.copy_buffer_to_buffer( daxa::BufferCopyInfo {
             .src_buffer = vertex_staging_buffer,
             .src_offset = 0,
-            .dst_buffer = vertex_buffer,
+            .dst_buffer = uses.vertex_buffer.buffer(),
             .dst_offset = 0,
             .size = 4 * sizeof(Vertex)
         });
 
-        upload_cmd_list.copy_buffer_to_buffer( daxa::BufferCopyInfo {
+        cmd_list.copy_buffer_to_buffer( daxa::BufferCopyInfo {
             .src_buffer = index_staging_buffer,
             .src_offset = 0,
-            .dst_buffer = index_buffer,
+            .dst_buffer = uses.index_buffer.buffer(),
             .dst_offset = 0,
             .size = 6 * sizeof(u32)
         });
+    }
+};
 
-        upload_cmd_list.complete();
-        device.submit_commands({
-            .command_lists = {std::move(upload_cmd_list)},
+
+struct RenderTask {
+    struct Uses {
+        daxa::BufferVertexShaderRead vertex_buffer = {};
+        daxa::BufferVertexShaderRead index_buffer = {};
+        daxa::ImageColorAttachment<> render_target = {};
+    } uses = {};
+
+    std::string_view name = "render";
+    RasterPipelineHolder* pipeline = {};
+
+    daxa::ImageId image_id = {};
+    daxa::SamplerId sampler_id = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        u32 size_x = ti.get_device().info_image(uses.render_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.render_target.image()).size.y;
+
+        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
+            .color_attachments = { daxa::RenderAttachmentInfo {
+                .image_view = uses.render_target.view(),
+                .load_op = daxa::AttachmentLoadOp::CLEAR,
+                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+            }},
+            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
         });
-        device.wait_idle();
-        device.destroy_buffer(vertex_staging_buffer);
-        device.destroy_buffer(index_staging_buffer);
+
+        cmd_list.set_pipeline(*pipeline->pipeline);
+        cmd_list.set_index_buffer(uses.index_buffer.buffer(), 0);
+        cmd_list.push_constant(DrawPush{
+            .vertices = ti.get_device().get_device_address(uses.vertex_buffer.buffer()),
+            .image_view_id = image_id.default_view(),
+            .sampler_id = sampler_id
+        });
+        cmd_list.draw_indexed({ .index_count = 6});
+        cmd_list.end_renderpass();
+    }
+};
+
+struct TextureQuadApp : public App {
+    daxa::BufferId vertex_buffer;
+    daxa::TaskBuffer task_vertex_buffer;
+
+    daxa::BufferId index_buffer;
+    daxa::TaskBuffer task_index_buffer;
+
+    RasterPipelineHolder raster_pipeline;
+    daxa::ImageId image_id;
+    daxa::SamplerId sampler_id;
+
+    daxa::TaskImage task_swapchain_image = {};
+    daxa::TaskGraph render_task_graph = {};
+
+    TextureQuadApp() : App("Texture Quad Example") {
+        vertex_buffer = device.create_buffer({
+            .size = 4 * sizeof(Vertex),
+            .allocate_info = daxa::MemoryFlagBits::DEDICATED_MEMORY,
+            .name = "vertex buffer"
+        });
+
+        task_vertex_buffer = daxa::TaskBuffer({
+            .initial_buffers = {.buffers = std::span{&vertex_buffer, 1}},
+            .name = "task vertex buffer",
+        });
+
+        index_buffer = device.create_buffer({
+            .size = 6 * sizeof(u32),
+            .allocate_info = daxa::MemoryFlagBits::DEDICATED_MEMORY,
+            .name = "index buffer"
+        });
+
+        task_index_buffer = daxa::TaskBuffer({
+            .initial_buffers = {.buffers = std::span{&index_buffer, 1}},
+            .name = "task index buffer",
+        });
+
+        auto upload_task_graph = daxa::TaskGraph({
+            .device = device,
+            .name = "upload task graph",
+        });
+
+        upload_task_graph.use_persistent_buffer(task_vertex_buffer);
+        upload_task_graph.use_persistent_buffer(task_index_buffer);
+
+        upload_task_graph.add_task(UploadMeshData{
+            .uses = {
+                .vertex_buffer = task_vertex_buffer,
+                .index_buffer = task_index_buffer
+            },
+        });
+
+        upload_task_graph.submit({});
+        upload_task_graph.complete({});
+        upload_task_graph.execute({});
 
         i32 size_x = 0;
         i32 size_y = 0;
@@ -102,12 +181,11 @@ struct TextureQuadApp : public App {
         image_id = device.create_image({
             .dimensions = 2,
             .format = daxa::Format::R8G8B8A8_SRGB,
-            .aspect = daxa::ImageAspectFlagBits::COLOR,
             .size = { static_cast<u32>(size_x), static_cast<u32>(size_y), 1 },
             .mip_level_count = mip_levels,
             .array_layer_count = 1,
             .sample_count = 1,
-            .usage = daxa::ImageUsageFlagBits::SHADER_READ_ONLY | daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::TRANSFER_SRC,
+            .usage = daxa::ImageUsageFlagBits::SHADER_SAMPLED | daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::TRANSFER_SRC,
             .allocate_info = daxa::MemoryFlagBits::DEDICATED_MEMORY
         });
 
@@ -139,7 +217,6 @@ struct TextureQuadApp : public App {
             .src_layout = daxa::ImageLayout::UNDEFINED,
             .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
             .image_slice = {
-                .image_aspect = daxa::ImageAspectFlagBits::COLOR,
                 .base_mip_level = 0,
                 .level_count = mip_levels,
                 .base_array_layer = 0,
@@ -154,7 +231,6 @@ struct TextureQuadApp : public App {
             .image = image_id,
             .image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
             .image_slice = {
-                .image_aspect = daxa::ImageAspectFlagBits::COLOR,
                 .mip_level = 0,
                 .base_array_layer = 0,
                 .layer_count = 1,
@@ -163,34 +239,22 @@ struct TextureQuadApp : public App {
             .image_extent = { static_cast<u32>(size_x), static_cast<u32>(size_y), 1 }
         });
 
+        auto image_info = device.info_image(image_id);
+
         std::array<i32, 3> mip_size = {
-            static_cast<i32>(size_x),
-            static_cast<i32>(size_y),
-            static_cast<i32>(1),
+            static_cast<i32>(image_info.size.x),
+            static_cast<i32>(image_info.size.y),
+            static_cast<i32>(image_info.size.z),
         };
 
-        for (u32 i = 0; i < mip_levels - 1; ++i) {
+        for(u32 i = 1; i < image_info.mip_level_count; i++) {
             cmd_list.pipeline_barrier_image_transition({
                 .src_access = daxa::AccessConsts::TRANSFER_WRITE,
                 .dst_access = daxa::AccessConsts::BLIT_READ,
                 .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
                 .dst_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 .image_slice = {
-                    .image_aspect = daxa::ImageAspectFlagBits::COLOR,
-                    .base_mip_level = i,
-                    .level_count = 1,
-                    .base_array_layer = 0,
-                    .layer_count = 1,
-                },
-                .image_id = image_id,
-            });
-
-            cmd_list.pipeline_barrier_image_transition({
-                .dst_access = daxa::AccessConsts::BLIT_READ,
-                .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-                .image_slice = {
-                    .image_aspect = daxa::ImageAspectFlagBits::COLOR,
-                    .base_mip_level = i + 1,
+                    .base_mip_level = i - 1,
                     .level_count = 1,
                     .base_array_layer = 0,
                     .layer_count = 1,
@@ -210,55 +274,50 @@ struct TextureQuadApp : public App {
                 .dst_image = image_id,
                 .dst_image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
                 .src_slice = {
-                    .image_aspect = daxa::ImageAspectFlagBits::COLOR,
-                    .mip_level = i,
+                    .mip_level = i - 1,
                     .base_array_layer = 0,
                     .layer_count = 1,
                 },
                 .src_offsets = {{{0, 0, 0}, {mip_size[0], mip_size[1], mip_size[2]}}},
                 .dst_slice = {
-                    .image_aspect = daxa::ImageAspectFlagBits::COLOR,
-                    .mip_level = i + 1,
+                    .mip_level = i,
                     .base_array_layer = 0,
                     .layer_count = 1,
                 },
                 .dst_offsets = {{{0, 0, 0}, {next_mip_size[0], next_mip_size[1], next_mip_size[2]}}},
                 .filter = daxa::Filter::LINEAR,
             });
-            
-            mip_size = next_mip_size;
-        }
-        for (u32 i = 0; i < mip_levels - 1; ++i) {
+
             cmd_list.pipeline_barrier_image_transition({
-                .src_access = daxa::AccessConsts::TRANSFER_READ_WRITE,
-                .dst_access = daxa::AccessConsts::READ_WRITE,
+                .src_access = daxa::AccessConsts::TRANSFER_WRITE,
+                .dst_access = daxa::AccessConsts::BLIT_READ,
                 .src_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                .dst_layout = daxa::ImageLayout::GENERAL,
+                .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
                 .image_slice = {
-                    .image_aspect = daxa::ImageAspectFlagBits::COLOR,
-                    .base_mip_level = i,
+                    .base_mip_level = i - 1,
                     .level_count = 1,
                     .base_array_layer = 0,
                     .layer_count = 1,
                 },
                 .image_id = image_id,
             });
+            
+            mip_size = next_mip_size;
         }
+
         cmd_list.pipeline_barrier_image_transition({
             .src_access = daxa::AccessConsts::TRANSFER_READ_WRITE,
             .dst_access = daxa::AccessConsts::READ_WRITE,
             .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::GENERAL,
+            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
             .image_slice = {
-                .image_aspect = daxa::ImageAspectFlagBits::COLOR,
-                .base_mip_level = mip_levels - 1,
+                .base_mip_level = image_info.mip_level_count - 1,
                 .level_count = 1,
                 .base_array_layer = 0,
                 .layer_count = 1,
             },
             .image_id = image_id,
         });
-
         cmd_list.complete();
 
         device.submit_commands({
@@ -269,7 +328,7 @@ struct TextureQuadApp : public App {
 
         stbi_image_free(data);
 
-        raster_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+        raster_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/textured_quad/shader.glsl" }, },
             },
@@ -282,9 +341,39 @@ struct TextureQuadApp : public App {
             },
             .push_constant_size = sizeof(DrawPush),
         }).value();
+
+        task_swapchain_image = daxa::TaskImage{{.swapchain_image = true, .name = "swapchain image"}};
+
+        render_task_graph = daxa::TaskGraph({
+            .device = device,
+            .swapchain = swapchain,
+            .name = "render task graph" 
+        });
+
+        render_task_graph.use_persistent_buffer(task_vertex_buffer);
+        render_task_graph.use_persistent_buffer(task_index_buffer);
+        render_task_graph.use_persistent_image(task_swapchain_image);
+
+        render_task_graph.add_task(RenderTask {
+            .uses = {
+                .vertex_buffer = task_vertex_buffer,
+                .index_buffer = task_index_buffer,
+                .render_target = task_swapchain_image,
+            },
+            .pipeline = &raster_pipeline,
+            .image_id = image_id,
+            .sampler_id = sampler_id
+        });
+
+        render_task_graph.submit({});
+        render_task_graph.present({});
+        render_task_graph.complete({});
+
     }
 
     ~TextureQuadApp() {
+        device.wait_idle();
+        device.collect_garbage();
         device.destroy_buffer(vertex_buffer);
         device.destroy_buffer(index_buffer);
         device.destroy_image(image_id);
@@ -293,58 +382,10 @@ struct TextureQuadApp : public App {
 
     void render() {
         auto swapchain_image = swapchain.acquire_next_image();
+        task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
         if(swapchain_image.is_empty()) { return; }
 
-        auto cmd_list = device.create_command_list({
-            .name = "render command list"
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
-            .color_attachments = { daxa::RenderAttachmentInfo {
-                .image_view = {swapchain_image},
-                .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
-            }},
-            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
-        });
-
-        cmd_list.set_pipeline(*raster_pipeline);
-        cmd_list.set_index_buffer(index_buffer, 0);
-        cmd_list.push_constant(DrawPush{
-            .vertices = device.get_device_address(vertex_buffer),
-            .image_view_id = image_id.default_view(),
-            .sampler_id = sampler_id
-        });
-        cmd_list.draw_indexed({ .index_count = 6});
-        cmd_list.end_renderpass();
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::ALL_GRAPHICS_READ_WRITE,
-            .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::PRESENT_SRC,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.complete();
-
-        device.submit_commands({
-            .command_lists = {std::move(cmd_list)},
-            .wait_binary_semaphores = {swapchain.get_acquire_semaphore()},
-            .signal_binary_semaphores = {swapchain.get_present_semaphore()},
-            .signal_timeline_semaphores = {{swapchain.get_gpu_timeline_semaphore(), swapchain.get_cpu_timeline_value()}},
-        });
-
-        device.present_frame({
-            .wait_binary_semaphores = {swapchain.get_present_semaphore()},
-            .swapchain = swapchain,
-        });
+        render_task_graph.execute({});
     }
 
     void update() {

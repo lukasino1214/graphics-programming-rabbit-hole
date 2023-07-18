@@ -14,25 +14,243 @@
 
 #include "../model.hpp"
 
-struct SSAOApp : public App {
-    std::unique_ptr<Model> model;
-    std::shared_ptr<daxa::RasterPipeline> g_buffer_gather_pipeline;
-    std::shared_ptr<daxa::RasterPipeline> composition_pipeline;
-    std::shared_ptr<daxa::RasterPipeline> ssao_generation_pipeline;
-    std::shared_ptr<daxa::RasterPipeline> ssao_blur_pipeline;
+struct GBufferGatherTask {
+    struct Uses {
+        daxa::ImageColorAttachment<> albedo_target = {};
+        daxa::ImageColorAttachment<> normal_target = {};
+        daxa::ImageDepthAttachment<> depth_target = {};
+    } uses = {};
 
-    daxa::ImageId depth_image;
-    daxa::ImageId albedo_image;
-    daxa::ImageId normal_image;
-    daxa::ImageId ssao_image;
-    daxa::ImageId ssao_blur_image;
-    daxa::SamplerId sampler_id;
+    std::string_view name = "g buffer gather";
+    RasterPipelineHolder* pipeline = {};
+    Model* model = {};
+    daxa::BufferId camera_buffer = {};
+    daxa::BufferId object_buffer = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        daxa::Device device = ti.get_device();
+
+        u32 size_x = ti.get_device().info_image(uses.albedo_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.albedo_target.image()).size.y;
+
+        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
+            .color_attachments = { 
+                daxa::RenderAttachmentInfo {
+                    .image_view = uses.albedo_target.view(),
+                    .load_op = daxa::AttachmentLoadOp::CLEAR,
+                    .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+                },
+                daxa::RenderAttachmentInfo {
+                    .image_view = uses.normal_target.view(),
+                    .load_op = daxa::AttachmentLoadOp::CLEAR,
+                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f},
+                },
+            },
+            .depth_attachment = {{
+                .image_view = uses.depth_target.view(),
+                .load_op = daxa::AttachmentLoadOp::CLEAR,
+                .clear_value = daxa::DepthValue{1.0f, 0},
+            }},
+            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
+        });
+        cmd_list.set_pipeline(*pipeline->pipeline);
+
+        for(auto& primitive : model->primitives) {
+            cmd_list.push_constant(GBufferGatherPush {
+                .camera_info = device.get_device_address(camera_buffer),
+                .object_info = device.get_device_address(object_buffer),
+                .vertices = device.get_device_address(model->vertex_buffer),
+                .materials = device.get_device_address(model->material_buffer),
+                .material_index = primitive.material_index
+            });
+
+            if(primitive.index_count > 0) {
+                cmd_list.set_index_buffer(model->index_buffer, 0);
+                cmd_list.draw_indexed({
+                    .index_count = primitive.index_count,
+                    .instance_count = 1,
+                    .first_index = primitive.first_index,
+                    .vertex_offset = static_cast<i32>(primitive.first_vertex),
+                    .first_instance = 0,
+                });
+            } else {
+                cmd_list.draw({
+                    .vertex_count = primitive.vertex_count,
+                    .instance_count = 1,
+                    .first_vertex = primitive.first_vertex,
+                    .first_instance = 0
+                });
+            }
+        }
+
+        cmd_list.end_renderpass();
+    }
+};
+
+struct SSAOGenerationTask {
+    struct Uses {
+        daxa::ImageColorAttachment<> ssao_target = {};
+        daxa::ImageShaderRead<> normal_target = {};
+        daxa::ImageShaderRead<> depth_target = {};
+    } uses = {};
+
+    std::string_view name = "ssao generatation";
+    RasterPipelineHolder* pipeline = {};
+    daxa::BufferId camera_buffer = {};
+    daxa::SamplerId sampler_id = {};
+    f32* scale = {};
+    f32* bias = {};
+    f32* radius = {};
+    i32* kernel_size = {};
+    Texture* noise_texture = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        daxa::Device device = ti.get_device();
+
+        u32 size_x = ti.get_device().info_image(uses.normal_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.normal_target.image()).size.y;
+
+        cmd_list.begin_renderpass({
+            .color_attachments = {{
+                    .image_view = uses.ssao_target.view(),
+                    .load_op = daxa::AttachmentLoadOp::CLEAR,
+                    .clear_value = std::array<f32, 4>{1.0f, 0.0f, 0.0f, 1.0f},
+            }},
+            .render_area = {.x = 0, .y = 0, .width = static_cast<u32>(static_cast<f32>(size_x) * *scale), .height = static_cast<u32>(static_cast<f32>(size_y) * *scale)},
+        });
+        cmd_list.set_pipeline(*pipeline->pipeline);
+        cmd_list.push_constant(SSAOGenerationPush {
+            .normal = uses.normal_target.view(),
+            .depth = uses.depth_target.view(),
+            .sampler_id = sampler_id,
+            .camera_info = device.get_device_address(camera_buffer),
+            .bias = *bias,
+            .radius = *radius,
+            .kernel_size = *kernel_size,
+            .noise_texture = noise_texture->get_texture_id()
+        });
+        cmd_list.draw({ .vertex_count = 3 });
+        cmd_list.end_renderpass();
+    }
+};
+
+struct SSAOBlurTask {
+    struct Uses {
+        daxa::ImageColorAttachment<> ssao_blur_target = {};
+        daxa::ImageShaderRead<> ssao_target = {};
+    } uses = {};
+
+    std::string_view name = "ssao blur";
+    RasterPipelineHolder* pipeline = {};
+    daxa::SamplerId sampler_id = {};
+    bool* apply_blur = {};
+    f32* scale = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+
+        u32 size_x = ti.get_device().info_image(uses.ssao_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.ssao_target.image()).size.y;
+
+        if(*apply_blur) {
+            cmd_list.begin_renderpass({
+                .color_attachments = {
+                    {
+                        .image_view = uses.ssao_blur_target.view(),
+                        .load_op = daxa::AttachmentLoadOp::CLEAR,
+                        .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
+                    },
+                },
+                .render_area = {.x = 0, .y = 0, .width = static_cast<u32>(size_x), .height = static_cast<u32>(size_y)},
+            });
+            cmd_list.set_pipeline(*pipeline->pipeline);
+            cmd_list.push_constant(SSAOBlurPush {
+                .ssao = uses.ssao_target.view(),
+                .sampler_id = sampler_id,
+            });
+            cmd_list.draw({ .vertex_count = 3 });
+            cmd_list.end_renderpass();
+        }
+    }
+};
+
+struct CompositionTask {
+    struct Uses {
+        daxa::ImageColorAttachment<> render_target = {};
+        daxa::ImageShaderRead<> albedo_target = {};
+        daxa::ImageShaderRead<> normal_target = {};
+        daxa::ImageShaderRead<> depth_target = {};
+        daxa::ImageShaderRead<> ssao_target = {};
+        daxa::ImageShaderRead<> ssao_blur_target = {};
+    } uses = {};
+
+    std::string_view name = "composition";
+    RasterPipelineHolder* pipeline = {};
+    daxa::SamplerId sampler_id = {};
+    daxa::BufferId camera_buffer = {};
+    daxa::ImGuiRenderer imgui_renderer = {};
+
+    bool* apply_blur = {};
+    f32* ssao_strength = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        daxa::Device device= ti.get_device();
+
+        u32 size_x = ti.get_device().info_image(uses.normal_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.normal_target.image()).size.y;
+
+        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
+            .color_attachments = { daxa::RenderAttachmentInfo {
+                .image_view = uses.render_target.view(),
+                .load_op = daxa::AttachmentLoadOp::CLEAR,
+                .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f},
+            }},
+            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
+        });
+        cmd_list.set_pipeline(*pipeline->pipeline);
+        cmd_list.push_constant(CompositionPush {
+            .albedo_image = uses.albedo_target.view(),
+            .normal_image = uses.normal_target.view(),
+            .depth_image = uses.depth_target.view(),
+            .ssao_image = *apply_blur ? uses.ssao_blur_target.view() : uses.ssao_target.view(),
+            .sampler_id = sampler_id,
+            .camera_info = device.get_device_address(camera_buffer),
+            .ssao_strength = *ssao_strength
+        });
+        cmd_list.draw({ .vertex_count = 3 });
+        cmd_list.end_renderpass();
+
+        imgui_renderer.record_commands(ImGui::GetDrawData(), cmd_list, uses.render_target.image(), size_x, size_y);
+    }
+};
+
+struct SSAOApp : public App {
+    std::unique_ptr<Model> model = {};
+    RasterPipelineHolder g_buffer_gather_pipeline = {};
+    RasterPipelineHolder composition_pipeline = {};
+    RasterPipelineHolder ssao_generation_pipeline = {};
+    RasterPipelineHolder ssao_blur_pipeline = {};
+
+    daxa::ImageId depth_image = {};
+    daxa::TaskImage task_depth_image = {};
+    daxa::ImageId albedo_image = {};
+    daxa::TaskImage task_albedo_image = {};
+    daxa::ImageId normal_image = {};
+    daxa::TaskImage task_normal_image = {};
+    daxa::ImageId ssao_image = {};
+    daxa::TaskImage task_ssao_image = {};
+    daxa::ImageId ssao_blur_image = {};
+    daxa::TaskImage task_ssao_blur_image = {};
+    daxa::SamplerId sampler_id = {};
 
     ControlledCamera3D camera;
-    daxa::BufferId camera_buffer;
-    daxa::BufferId object_buffer;
+    daxa::BufferId camera_buffer = {};
+    daxa::BufferId object_buffer = {};
 
-    std::unique_ptr<Texture> noise_texture;
+    std::unique_ptr<Texture> noise_texture = {};
 
     f64 current_frame = glfwGetTime();
     f64 last_frame = current_frame;
@@ -51,8 +269,11 @@ struct SSAOApp : public App {
 
     daxa::ImGuiRenderer imgui_renderer;
 
+    daxa::TaskImage task_swapchain_image = {};
+    daxa::TaskGraph render_task_graph = {};
+
     SSAOApp() : App("SSAO Example") {
-        g_buffer_gather_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+        g_buffer_gather_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/ssao/g_buffer_gather.glsl" }, },
             },
@@ -75,7 +296,7 @@ struct SSAOApp : public App {
             .name = "g_buffer_gather_pipeline"
         }).value();
 
-        composition_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+        composition_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/ssao/composition.glsl" }, },
             },
@@ -93,7 +314,7 @@ struct SSAOApp : public App {
             .name = "composition_pipeline"
         }).value();
 
-        ssao_generation_pipeline = pipeline_manager.add_raster_pipeline({
+        ssao_generation_pipeline.pipeline = pipeline_manager.add_raster_pipeline({
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/ssao/ssao_generation.glsl" }, },
             },
@@ -109,7 +330,7 @@ struct SSAOApp : public App {
             .name = "ssao_generation_pipeline"
         }).value();
 
-        ssao_blur_pipeline = pipeline_manager.add_raster_pipeline({
+        ssao_blur_pipeline.pipeline = pipeline_manager.add_raster_pipeline({
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/ssao/ssao_blur.glsl" }, },
             },
@@ -127,43 +348,68 @@ struct SSAOApp : public App {
 
         depth_image = device.create_image({
             .format = daxa::Format::D32_SFLOAT,
-            .aspect = daxa::ImageAspectFlagBits::DEPTH,
             .size = { size_x, size_y, 1 },
-            .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+            .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             .name = "depth_image"
         });
 
+        task_depth_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&depth_image, 1}},
+            .swapchain_image = false,
+            .name = "task depth image"
+        }};
+
         albedo_image = device.create_image({
             .format = swapchain.get_format(),
-            .aspect = daxa::ImageAspectFlagBits::COLOR,
             .size = { size_x, size_y, 1 },
-            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             .name = "albedo_image"
         });
 
+        task_albedo_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&albedo_image, 1}},
+            .swapchain_image = false,
+            .name = "task albedo image"
+        }};
+
         normal_image = device.create_image({
             .format = daxa::Format::R16G16B16A16_SFLOAT,
-            .aspect = daxa::ImageAspectFlagBits::COLOR,
             .size = { size_x, size_y, 1 },
-            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             .name = "normal_image"
         });
 
+        task_normal_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&normal_image, 1}},
+            .swapchain_image = false,
+            .name = "task normal image"
+        }};
+
         ssao_image = device.create_image({
             .format = daxa::Format::R8_UNORM,
-            .aspect = daxa::ImageAspectFlagBits::COLOR,
             .size = { static_cast<u32>(static_cast<f32>(size_x) * scale), static_cast<u32>(static_cast<f32>(size_y) * scale), 1 },
-            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             .name = "ssao_image"
         });
 
+        task_ssao_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&ssao_image, 1}},
+            .swapchain_image = false,
+            .name = "task ssao image"
+        }};
+
         ssao_blur_image = device.create_image({
             .format = daxa::Format::R8_UNORM,
-            .aspect = daxa::ImageAspectFlagBits::COLOR,
             .size = { static_cast<u32>(static_cast<f32>(size_x) * scale), static_cast<u32>(static_cast<f32>(size_y) * scale), 1 },
-            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             .name = "ssao_blur_image"
         });
+
+        task_ssao_blur_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&ssao_blur_image, 1}},
+            .swapchain_image = false,
+            .name = "task ssao blur image"
+        }};
 
         sampler_id = device.create_sampler({
             .magnification_filter = daxa::Filter::LINEAR,
@@ -206,6 +452,81 @@ struct SSAOApp : public App {
             .device = device,
             .format = swapchain.get_format(),
         });
+
+        render_task_graph = daxa::TaskGraph({
+            .device = device,
+            .swapchain = swapchain,
+            .name = "render task graph" 
+        });
+
+        task_swapchain_image = daxa::TaskImage{{.swapchain_image = true, .name = "swapchain image"}};
+
+        render_task_graph.use_persistent_image(task_swapchain_image);
+        render_task_graph.use_persistent_image(task_albedo_image);
+        render_task_graph.use_persistent_image(task_normal_image);
+        render_task_graph.use_persistent_image(task_depth_image);
+        render_task_graph.use_persistent_image(task_ssao_image);
+        render_task_graph.use_persistent_image(task_ssao_blur_image);
+
+        render_task_graph.add_task(GBufferGatherTask {
+            .uses = {
+                .albedo_target = task_albedo_image,
+                .normal_target = task_normal_image,
+                .depth_target = task_depth_image
+            },
+            .pipeline = &g_buffer_gather_pipeline,
+            .model = model.get(),
+            .camera_buffer = camera_buffer,
+            .object_buffer = object_buffer
+        });
+
+        render_task_graph.add_task(SSAOGenerationTask {
+            .uses = {
+                .ssao_target = task_ssao_image,
+                .normal_target = task_normal_image,
+                .depth_target = task_depth_image
+            },
+            .pipeline = &ssao_generation_pipeline,
+            .camera_buffer = camera_buffer,
+            .sampler_id = sampler_id,
+            .scale = &scale,
+            .bias= &bias,
+            .radius = &radius,
+            .kernel_size = &kernel_size,
+            .noise_texture = noise_texture.get()
+        });
+
+        render_task_graph.add_task(SSAOBlurTask {
+            .uses = {
+                .ssao_blur_target = task_ssao_blur_image,
+                .ssao_target = task_ssao_image
+            },
+            .pipeline = &ssao_blur_pipeline,
+            .sampler_id = sampler_id,
+            .apply_blur = &apply_blur,
+            .scale = &scale
+        });
+
+        render_task_graph.add_task(CompositionTask {
+            .uses = {
+                .render_target = task_swapchain_image,
+                .albedo_target = task_albedo_image,
+                .normal_target = task_normal_image,
+                .depth_target = task_depth_image,
+                .ssao_target = task_ssao_image,
+                .ssao_blur_target = task_ssao_blur_image,
+            },
+            .pipeline = &composition_pipeline,
+            .sampler_id = sampler_id,
+            .camera_buffer = camera_buffer,
+            .imgui_renderer = imgui_renderer,
+            .apply_blur = &apply_blur,
+            .ssao_strength = &ssao_strength
+        });
+
+        render_task_graph.submit({});
+        render_task_graph.present({});
+        render_task_graph.complete({});
     }
 
     ~SSAOApp() {
@@ -221,9 +542,8 @@ struct SSAOApp : public App {
 
     void render() {
         auto swapchain_image = swapchain.acquire_next_image();
+        task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
         if(swapchain_image.is_empty()) { return; }
-
-        auto cmd_list = device.create_command_list({.name = "render command list"});
 
         glm::mat4 projection = camera.camera.proj_mat;
         glm::mat4 view = camera.camera.get_view();
@@ -245,220 +565,7 @@ struct SSAOApp : public App {
         object_ptr->model_matrix = *reinterpret_cast<f32mat4x4*>(&model_matrix);
         object_ptr->normal_matrix = *reinterpret_cast<f32mat4x4*>(&normal_matrix);
 
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::GENERAL,
-            .image_slice = {.image_aspect = daxa::ImageAspectFlagBits::DEPTH },
-            .image_id = depth_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_id = albedo_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_id = normal_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_id = ssao_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_id = ssao_blur_image
-        });
-
-        // g buffer gather
-        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
-            .color_attachments = { 
-                daxa::RenderAttachmentInfo {
-                    .image_view = albedo_image.default_view(),
-                    .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
-                },
-                daxa::RenderAttachmentInfo {
-                    .image_view = normal_image.default_view(),
-                    .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f},
-                },
-            },
-            .depth_attachment = {{
-                .image_view = depth_image.default_view(),
-                .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = daxa::DepthValue{1.0f, 0},
-            }},
-            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
-        });
-        cmd_list.set_pipeline(*g_buffer_gather_pipeline);
-
-        for(auto& primitive : model->primitives) {
-            cmd_list.push_constant(GBufferGatherPush {
-                .camera_info = device.get_device_address(camera_buffer),
-                .object_info = device.get_device_address(object_buffer),
-                .vertices = device.get_device_address(model->vertex_buffer),
-                .materials = device.get_device_address(model->material_buffer),
-                .material_index = primitive.material_index
-            });
-
-            if(primitive.index_count > 0) {
-                cmd_list.set_index_buffer(model->index_buffer, 0);
-                cmd_list.draw_indexed({
-                    .index_count = primitive.index_count,
-                    .instance_count = 1,
-                    .first_index = primitive.first_index,
-                    .vertex_offset = static_cast<i32>(primitive.first_vertex),
-                    .first_instance = 0,
-                });
-            } else {
-                cmd_list.draw({
-                    .vertex_count = primitive.vertex_count,
-                    .instance_count = 1,
-                    .first_vertex = primitive.first_vertex,
-                    .first_instance = 0
-                });
-            }
-        }
-
-        cmd_list.end_renderpass();
-
-        cmd_list.begin_renderpass({
-            .color_attachments = {{
-                    .image_view = ssao_image.default_view(),
-                    .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<f32, 4>{1.0f, 0.0f, 0.0f, 1.0f},
-            }},
-            .render_area = {.x = 0, .y = 0, .width = static_cast<u32>(static_cast<f32>(size_x) * scale), .height = static_cast<u32>(static_cast<f32>(size_y) * scale)},
-        });
-        cmd_list.set_pipeline(*ssao_generation_pipeline);
-        cmd_list.push_constant(SSAOGenerationPush {
-            .normal = normal_image.default_view(),
-            .depth = depth_image.default_view(),
-            .sampler_id = sampler_id,
-            .camera_info = device.get_device_address(camera_buffer),
-            .bias = bias,
-            .radius = radius,
-            .kernel_size = kernel_size,
-            .noise_texture = noise_texture->get_texture_id()
-        });
-        cmd_list.draw({ .vertex_count = 3 });
-        cmd_list.end_renderpass();
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_READ,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_id = ssao_image
-        });
-
-        if(apply_blur) {
-            cmd_list.begin_renderpass({
-                .color_attachments = {
-                    {
-                        .image_view = ssao_blur_image.default_view(),
-                        .load_op = daxa::AttachmentLoadOp::CLEAR,
-                        .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
-                    },
-                },
-                .render_area = {.x = 0, .y = 0, .width = static_cast<u32>(static_cast<f32>(size_x) * scale), .height = static_cast<u32>(static_cast<f32>(size_y) * scale)},
-            });
-            cmd_list.set_pipeline(*ssao_blur_pipeline);
-            cmd_list.push_constant(SSAOBlurPush {
-                .ssao = ssao_image.default_view(),
-                .sampler_id = sampler_id,
-            });
-            cmd_list.draw({ .vertex_count = 3 });
-            cmd_list.end_renderpass();
-        }
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_READ,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_id = albedo_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_READ,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_id = normal_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_READ,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_id = ssao_blur_image
-        });
-
-        // composition
-        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
-            .color_attachments = { daxa::RenderAttachmentInfo {
-                .image_view = swapchain_image.default_view(),
-                .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f},
-            }},
-            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
-        });
-        cmd_list.set_pipeline(*composition_pipeline);
-        cmd_list.push_constant(CompositionPush {
-            .albedo_image = albedo_image.default_view(),
-            .normal_image = normal_image.default_view(),
-            .depth_image = depth_image.default_view(),
-            .ssao_image = apply_blur ? ssao_blur_image.default_view() : ssao_image.default_view(),
-            .sampler_id = sampler_id,
-            .camera_info = device.get_device_address(camera_buffer),
-            .ssao_strength = ssao_strength
-        });
-        cmd_list.draw({ .vertex_count = 3 });
-        cmd_list.end_renderpass();
-
-        imgui_renderer.record_commands(ImGui::GetDrawData(), cmd_list, swapchain_image, size_x, size_y);
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::ALL_GRAPHICS_READ_WRITE,
-            .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::PRESENT_SRC,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.complete();
-
-        device.submit_commands({
-            .command_lists = {std::move(cmd_list)},
-            .wait_binary_semaphores = {swapchain.get_acquire_semaphore()},
-            .signal_binary_semaphores = {swapchain.get_present_semaphore()},
-            .signal_timeline_semaphores = {{swapchain.get_gpu_timeline_semaphore(), swapchain.get_cpu_timeline_value()}},
-        });
-
-        device.present_frame({
-            .wait_binary_semaphores = {swapchain.get_present_semaphore()},
-            .swapchain = swapchain,
-        });
+        render_task_graph.execute({});
     }
 
     void update() {
@@ -487,7 +594,7 @@ struct SSAOApp : public App {
                     blur_mode.value = "1";
                 }
 
-                ssao_blur_pipeline = pipeline_manager.add_raster_pipeline({
+                ssao_blur_pipeline.pipeline = pipeline_manager.add_raster_pipeline({
                     .vertex_shader_info = daxa::ShaderCompileInfo {
                         .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/ssao/ssao_blur.glsl" }, },
                     },
@@ -510,7 +617,7 @@ struct SSAOApp : public App {
                     debug_mode.value = "1";
                 }
 
-                composition_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+                composition_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
                     .vertex_shader_info = daxa::ShaderCompileInfo {
                         .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/ssao/composition.glsl" }, },
                     },
@@ -535,7 +642,7 @@ struct SSAOApp : public App {
                     noise_mode.value = "1";
                 }
 
-                ssao_generation_pipeline = pipeline_manager.add_raster_pipeline({
+                ssao_generation_pipeline.pipeline = pipeline_manager.add_raster_pipeline({
                     .vertex_shader_info = daxa::ShaderCompileInfo {
                         .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/ssao/ssao_generation.glsl" }, },
                     },
@@ -570,47 +677,47 @@ struct SSAOApp : public App {
             device.destroy_image(depth_image);
             depth_image = device.create_image({
                 .format = daxa::Format::D32_SFLOAT,
-                .aspect = daxa::ImageAspectFlagBits::DEPTH,
                 .size = { size_x, size_y, 1 },
-                .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
                 .name = "depth_image"
             });
+            task_depth_image.set_images({.images = std::span{&depth_image, 1}});
 
             device.destroy_image(albedo_image);
             albedo_image = device.create_image({
                 .format = swapchain.get_format(),
-                .aspect = daxa::ImageAspectFlagBits::COLOR,
                 .size = { size_x, size_y, 1 },
-                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
                 .name = "albedo_image"
             });
+            task_albedo_image.set_images({.images = std::span{&albedo_image, 1}});
 
             device.destroy_image(normal_image);
             normal_image = device.create_image({
                 .format = daxa::Format::R16G16B16A16_SFLOAT,
-                .aspect = daxa::ImageAspectFlagBits::COLOR,
                 .size = { size_x, size_y, 1 },
-                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
                 .name = "normal_image"
             });
+            task_normal_image.set_images({.images = std::span{&normal_image, 1}});
             
             device.destroy_image(ssao_image);
             ssao_image = device.create_image({
                 .format = daxa::Format::R8_UNORM,
-                .aspect = daxa::ImageAspectFlagBits::COLOR,
                 .size = { static_cast<u32>(static_cast<f32>(size_x) * scale), static_cast<u32>(static_cast<f32>(size_y) * scale), 1 },
-                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
                 .name = "ssao_image"
             });
+            task_ssao_image.set_images({.images = std::span{&ssao_image, 1}});
 
             device.destroy_image(ssao_blur_image);
             ssao_blur_image = device.create_image({
                 .format = daxa::Format::R8_UNORM,
-                .aspect = daxa::ImageAspectFlagBits::COLOR,
                 .size = { static_cast<u32>(static_cast<f32>(size_x) * scale), static_cast<u32>(static_cast<f32>(size_y) * scale), 1 },
-                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
                 .name = "ssao_blur_image"
             });
+            task_ssao_blur_image.set_images({.images = std::span{&ssao_blur_image, 1}});
 
             camera.camera.resize(size_x, size_y);
         }

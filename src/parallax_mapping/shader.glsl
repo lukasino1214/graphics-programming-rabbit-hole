@@ -7,13 +7,13 @@ DAXA_DECL_PUSH_CONSTANT(DrawPush, push)
 #if DAXA_SHADER_STAGE == DAXA_SHADER_STAGE_VERTEX
 
 layout(location = 0) out f32vec2 out_uv;
-layout (location = 1) out f32vec3 outTangentLightPos;
-layout (location = 2) out f32vec3 outTangentViewPos;
-layout (location = 3) out f32vec3 outTangentFragPos;
+layout (location = 1) out f32vec3 out_tangent_light_position;
+layout (location = 2) out f32vec3 out_tangent_camera_position;
+layout (location = 3) out f32vec3 out_tangent_frag_position;
 
 void main() {
     out_uv = deref(push.vertices[gl_VertexIndex]).uv;
-    outTangentFragPos = vec3(deref(push.object_info).model_matrix * vec4(deref(push.vertices[gl_VertexIndex]).position, 1.0));   
+    out_tangent_frag_position = vec3(deref(push.object_info).model_matrix * vec4(deref(push.vertices[gl_VertexIndex]).position, 1.0));   
     
     gl_Position = deref(push.camera_info).projection_matrix * deref(push.camera_info).view_matrix * deref(push.object_info).model_matrix * vec4(deref(push.vertices[gl_VertexIndex]).position, 1.0);
     
@@ -22,19 +22,17 @@ void main() {
 	vec3 B = normalize(cross(N, T));
 	mat3 TBN = transpose(mat3(T, B, N));
 
-	outTangentLightPos = TBN * push.light_position;
-	outTangentViewPos  = TBN * deref(push.camera_info).position * -1.0;
-	outTangentFragPos  = TBN * outTangentFragPos;
+	out_tangent_light_position = TBN * push.light_position;
+	out_tangent_camera_position  = TBN * deref(push.camera_info).position * -1.0;
+	out_tangent_frag_position  = TBN * out_tangent_frag_position;
 }
 
 #elif DAXA_SHADER_STAGE == DAXA_SHADER_STAGE_FRAGMENT
 
 layout(location = 0) in f32vec2 in_uv;
-layout (location = 1) in f32vec3 inTangentLightPos;
-layout (location = 2) in f32vec3 inTangentViewPos;
-layout (location = 3) in f32vec3 inTangentFragPos;
-layout (location = 4) in f32vec3 in_position;
-layout (location = 5) in flat mat3 TBN;
+layout (location = 1) in f32vec3 in_tangent_light_position;
+layout (location = 2) in f32vec3 in_tangent_camera_position;
+layout (location = 3) in f32vec3 in_tangent_frag_position;
 
 layout(location = 0) out f32vec4 out_color;
 
@@ -130,22 +128,6 @@ f32vec2 contact_refinement_parallax_mapping(f32vec2 uv, f32vec3 view_direction) 
 		}
 	}
 
-    /*layer_depth = 1.0 / (push.layers * push.layers);
-    for (int i = 1; i < push.layers * 0.5 + 1.0; i++) {
-        float step = 0.5;
-        delta_uv *= step;
-        layer_depth *= step;
-		height = 1.0 - sample_texture(push.heightmap_texture, current_uv).r;
-
-		if (height > current_layer_depth) {
-			current_layer_depth += layer_depth;
-		    current_uv -= delta_uv;
-		} else {
-            current_layer_depth -= layer_depth;
-		    current_uv += delta_uv;
-        }
-	}*/
-
     for (int i = 2; i < push.layers * 0.5 + 2.0; i++) {
         delta_uv /= float(i);
         layer_depth /= float(i);
@@ -168,7 +150,7 @@ void main() {
 #if MAPPING_MODE == 0
     out_color = f32vec4(sample_texture(MATERIAL.albedo_image, uv).rgb, 1.0);
 #else
-    f32vec3 tangent_view_direction = normalize(inTangentViewPos - inTangentFragPos);
+    f32vec3 tangent_view_direction = normalize(in_tangent_camera_position - in_tangent_frag_position);
 #endif
 
 #if MAPPING_MODE == 2
@@ -191,7 +173,7 @@ void main() {
     f32vec3 tangent_normal = sample_texture(MATERIAL.normal_image, uv).xyz * 2.0 - 1.0;
     f32vec3 normal = normalize(tangent_normal);
 
-    f32vec3 light_direction = normalize(inTangentLightPos - inTangentFragPos);
+    f32vec3 light_direction = normalize(in_tangent_light_position - in_tangent_frag_position);
     f32vec3 diffuse = color * max(dot(light_direction, normal), 0.0);
 
     f32vec3 view_direction = tangent_view_direction;

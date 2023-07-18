@@ -15,17 +15,152 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 
+struct RenderShadowTask {
+    struct Uses {
+        daxa::ImageDepthAttachment<> shadow_target = {};
+    } uses = {};
+
+    std::string_view name = "render shadow";
+    RasterPipelineHolder* pipeline = {};
+    Model* model = {};
+    glm::mat4* light_matrix = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+
+        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
+            .depth_attachment = {{
+                .image_view = uses.shadow_target.view(),
+                .load_op = daxa::AttachmentLoadOp::CLEAR,
+                .clear_value = daxa::DepthValue{1.0f, 0},
+            }},
+            .render_area = {.x = 0, .y = 0, .width = 1024, .height = 1024},
+        });
+        cmd_list.set_pipeline(*pipeline->pipeline);
+
+        glm::mat4 shadow_mvp = *light_matrix;
+
+        for(auto& primitive : model->primitives) {
+            cmd_list.push_constant(ShadowPush {
+                .mvp = *reinterpret_cast<f32mat4x4*>(&shadow_mvp),
+                .vertices = ti.get_device().get_device_address(model->vertex_buffer)
+            });
+
+            if(primitive.index_count > 0) {
+                cmd_list.set_index_buffer(model->index_buffer, 0);
+                cmd_list.draw_indexed({
+                    .index_count = primitive.index_count,
+                    .instance_count = 1,
+                    .first_index = primitive.first_index,
+                    .vertex_offset = static_cast<i32>(primitive.first_vertex),
+                    .first_instance = 0,
+                });
+            } else {
+                cmd_list.draw({
+                    .vertex_count = primitive.vertex_count,
+                    .instance_count = 1,
+                    .first_vertex = primitive.first_vertex,
+                    .first_instance = 0
+                });
+            }
+        }
+
+        cmd_list.end_renderpass();
+    }
+};
+
+struct RenderTask {
+    struct Uses {
+        daxa::ImageColorAttachment<> render_target = {};
+        daxa::ImageDepthAttachment<> depth_target = {};
+        daxa::ImageShaderRead<> shadow_image = {};
+    } uses = {};
+
+    std::string_view name = "render";
+    RasterPipelineHolder* pipeline = {};
+    ControlledCamera3D* camera = {};
+    Model* model = {};
+    daxa::BufferId light_buffer = {};
+    daxa::ImGuiRenderer imgui_renderer = {};
+
+    f32* bias = {};
+    i32* pcf_range = {};
+    f32* shadow_intensity = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        u32 size_x = ti.get_device().info_image(uses.render_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.render_target.image()).size.y;
+
+        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
+            .color_attachments = { daxa::RenderAttachmentInfo {
+                .image_view = uses.render_target.view(),
+                .load_op = daxa::AttachmentLoadOp::CLEAR,
+                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+            }},
+            .depth_attachment = {{
+                .image_view = uses.depth_target.view(),
+                .load_op = daxa::AttachmentLoadOp::CLEAR,
+                .clear_value = daxa::DepthValue{1.0f, 0},
+            }},
+            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
+        });
+        cmd_list.set_pipeline(*pipeline->pipeline);
+
+        glm::mat4 mvp = camera->camera.get_vp() * glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 0.0f, 0.0f}) * glm::scale(glm::mat4{1.0f}, glm::vec3{0.01f, 0.01f, 0.01f});
+
+        for(auto& primitive : model->primitives) {
+            cmd_list.push_constant(DrawPush {
+                .mvp = *reinterpret_cast<f32mat4x4*>(&mvp),
+                .vertices = ti.get_device().get_device_address(model->vertex_buffer),
+                .materials = ti.get_device().get_device_address(model->material_buffer),
+                .material_index = primitive.material_index,
+                .light_buffer = ti.get_device().get_device_address(light_buffer),
+                .bias = *bias,
+                .pcf_range = *pcf_range,
+                .shadow_intensity = *shadow_intensity
+            });
+
+            if(primitive.index_count > 0) {
+                cmd_list.set_index_buffer(model->index_buffer, 0);
+                cmd_list.draw_indexed({
+                    .index_count = primitive.index_count,
+                    .instance_count = 1,
+                    .first_index = primitive.first_index,
+                    .vertex_offset = static_cast<i32>(primitive.first_vertex),
+                    .first_instance = 0,
+                });
+            } else {
+                cmd_list.draw({
+                    .vertex_count = primitive.vertex_count,
+                    .instance_count = 1,
+                    .first_vertex = primitive.first_vertex,
+                    .first_instance = 0
+                });
+            }
+        }
+
+        cmd_list.end_renderpass();
+
+        imgui_renderer.record_commands(ImGui::GetDrawData(), cmd_list, uses.render_target.image(), size_x, size_y);
+    }
+};
+
 struct DirectionalShadowApp : public App {
-    std::unique_ptr<Model> model;
-    std::shared_ptr<daxa::RasterPipeline> raster_pipeline;
-    std::shared_ptr<daxa::RasterPipeline> shadow_pipeline;
-    daxa::ImageId depth_image;
+    std::unique_ptr<Model> model = {};
+    RasterPipelineHolder raster_pipeline = {};
+    RasterPipelineHolder shadow_pipeline = {};
 
-    daxa::ImageId shadow_image;
-    daxa::SamplerId shadow_sampler;
-    daxa::BufferId light_buffer;
+    daxa::ImageId depth_image = {};
+    daxa::TaskImage task_depth_image = {};
 
-    glm::mat4 light_matrix;
+    daxa::ImageId shadow_image = {};
+    daxa::TaskImage task_shadow_image = {};
+
+    daxa::SamplerId shadow_sampler = {};
+    daxa::BufferId light_buffer = {};
+
+    glm::mat4 light_matrix = {};
 
     ControlledCamera3D camera;
 
@@ -36,14 +171,17 @@ struct DirectionalShadowApp : public App {
 
     bool use_pcf = false;
     glm::vec3 direction = { -6.9, 0.0f, 0.0f };
-    float bias = 0.0001f;
-    int pcf_range = 1;
-    float shadow_intensity = 0.1f;
+    f32 bias = 0.0001f;
+    i32 pcf_range = 1;
+    f32 shadow_intensity = 0.1f;
 
     daxa::ImGuiRenderer imgui_renderer;
 
+    daxa::TaskImage task_swapchain_image = {};
+    daxa::TaskGraph render_task_graph = {};
+
     DirectionalShadowApp() : App("Directional shadow Example") {
-        raster_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+        raster_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/directional_shadow/shader.glsl" }, },
             },
@@ -63,9 +201,10 @@ struct DirectionalShadowApp : public App {
                 .face_culling = daxa::FaceCullFlagBits::FRONT_BIT
             },
             .push_constant_size = sizeof(DrawPush),
+            .name = "raster pipeline"
         }).value();
 
-        shadow_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+        shadow_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/directional_shadow/shadow.glsl" }, },
             },
@@ -85,23 +224,34 @@ struct DirectionalShadowApp : public App {
                 .depth_bias_slope_factor = 1.75f
             },
             .push_constant_size = sizeof(ShadowPush),
+            .name = "shadow pipeline"
         }).value();
 
         depth_image = device.create_image({
             .format = daxa::Format::D32_SFLOAT,
-            .aspect = daxa::ImageAspectFlagBits::DEPTH,
             .size = { size_x, size_y, 1 },
             .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT,
             .name = "depth buffer"
         });
 
+        task_depth_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&depth_image, 1}},
+            .swapchain_image = false,
+            .name = "task depth image"
+        }};
+
         shadow_image = device.create_image({
             .format = daxa::Format::D32_SFLOAT,
-            .aspect = daxa::ImageAspectFlagBits::DEPTH,
             .size = {1024, 1024, 1},
-            .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+            .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             .name = "shadow image"
         });
+
+        task_shadow_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&shadow_image, 1}},
+            .swapchain_image = false,
+            .name = "task shadow image"
+        }};
 
         shadow_sampler = device.create_sampler(daxa::SamplerInfo {
             .magnification_filter = daxa::Filter::LINEAR,
@@ -137,6 +287,47 @@ struct DirectionalShadowApp : public App {
             .device = device,
             .format = swapchain.get_format(),
         });
+
+        render_task_graph = daxa::TaskGraph({
+            .device = device,
+            .swapchain = swapchain,
+            .name = "render task graph" 
+        });
+
+        task_swapchain_image = daxa::TaskImage{{.swapchain_image = true, .name = "swapchain image"}};
+
+        render_task_graph.use_persistent_image(task_swapchain_image);
+        render_task_graph.use_persistent_image(task_depth_image);
+        render_task_graph.use_persistent_image(task_shadow_image);;
+
+        render_task_graph.add_task(RenderShadowTask {
+            .uses = {
+                .shadow_target = task_shadow_image
+            },
+            .pipeline = &shadow_pipeline,
+            .model = model.get(),
+            .light_matrix = &light_matrix
+        });
+
+        render_task_graph.add_task(RenderTask {
+            .uses = {
+                .render_target = task_swapchain_image,
+                .depth_target = task_depth_image,
+                .shadow_image = task_shadow_image
+            },
+            .pipeline = &raster_pipeline,
+            .camera = &camera,
+            .model = model.get(),
+            .light_buffer = light_buffer,
+            .imgui_renderer = imgui_renderer,
+            .bias = &bias,
+            .pcf_range = &pcf_range,
+            .shadow_intensity = &shadow_intensity,
+        });
+
+        render_task_graph.submit({});
+        render_task_graph.present({});
+        render_task_graph.complete({});
     }
 
     ~DirectionalShadowApp() {
@@ -148,9 +339,8 @@ struct DirectionalShadowApp : public App {
 
     void render() {
         auto swapchain_image = swapchain.acquire_next_image();
+        task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
         if(swapchain_image.is_empty()) { return; }
-
-        auto cmd_list = device.create_command_list({.name = "render command list"});
 
         glm::vec3 light_position(-4.0f, 55.0f, -4.0f);
         glm::mat4 light_projection = glm::ortho(-128.0f, 128.0f, -128.0f, 128.0f, -128.0f, 128.0f);
@@ -173,148 +363,7 @@ struct DirectionalShadowApp : public App {
             ptr->shadow_sampler = shadow_sampler;
         }
 
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_slice = {.image_aspect = daxa::ImageAspectFlagBits::DEPTH },
-            .image_id = depth_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_slice = {.image_aspect = daxa::ImageAspectFlagBits::DEPTH },
-            .image_id = shadow_image
-        });
-
-        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
-            .depth_attachment = {{
-                .image_view = shadow_image.default_view(),
-                .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = daxa::DepthValue{1.0f, 0},
-            }},
-            .render_area = {.x = 0, .y = 0, .width = 1024, .height = 1024},
-        });
-        cmd_list.set_pipeline(*shadow_pipeline);
-
-        glm::mat4 shadow_mvp = light_matrix;
-
-        for(auto& primitive : model->primitives) {
-            cmd_list.push_constant(ShadowPush {
-                .mvp = *reinterpret_cast<f32mat4x4*>(&shadow_mvp),
-                .vertices = device.get_device_address(model->vertex_buffer)
-            });
-
-            if(primitive.index_count > 0) {
-                cmd_list.set_index_buffer(model->index_buffer, 0);
-                cmd_list.draw_indexed({
-                    .index_count = primitive.index_count,
-                    .instance_count = 1,
-                    .first_index = primitive.first_index,
-                    .vertex_offset = static_cast<i32>(primitive.first_vertex),
-                    .first_instance = 0,
-                });
-            } else {
-                cmd_list.draw({
-                    .vertex_count = primitive.vertex_count,
-                    .instance_count = 1,
-                    .first_vertex = primitive.first_vertex,
-                    .first_instance = 0
-                });
-            }
-        }
-
-        cmd_list.end_renderpass();
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_slice = {.image_aspect = daxa::ImageAspectFlagBits::DEPTH },
-            .image_id = shadow_image
-        });
-
-        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
-            .color_attachments = { daxa::RenderAttachmentInfo {
-                .image_view = {swapchain_image},
-                .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
-            }},
-            .depth_attachment = {{
-                .image_view = depth_image.default_view(),
-                .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = daxa::DepthValue{1.0f, 0},
-            }},
-            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
-        });
-        cmd_list.set_pipeline(*raster_pipeline);
-
-        glm::mat4 mvp = camera.camera.get_vp() * model_mat;
-
-        for(auto& primitive : model->primitives) {
-            cmd_list.push_constant(DrawPush {
-                .mvp = *reinterpret_cast<f32mat4x4*>(&mvp),
-                .vertices = device.get_device_address(model->vertex_buffer),
-                .materials = device.get_device_address(model->material_buffer),
-                .material_index = primitive.material_index,
-                .light_buffer = device.get_device_address(light_buffer),
-                .bias = bias,
-                .pcf_range = pcf_range,
-                .shadow_intensity = shadow_intensity
-            });
-
-            if(primitive.index_count > 0) {
-                cmd_list.set_index_buffer(model->index_buffer, 0);
-                cmd_list.draw_indexed({
-                    .index_count = primitive.index_count,
-                    .instance_count = 1,
-                    .first_index = primitive.first_index,
-                    .vertex_offset = static_cast<i32>(primitive.first_vertex),
-                    .first_instance = 0,
-                });
-            } else {
-                cmd_list.draw({
-                    .vertex_count = primitive.vertex_count,
-                    .instance_count = 1,
-                    .first_vertex = primitive.first_vertex,
-                    .first_instance = 0
-                });
-            }
-        }
-
-        cmd_list.end_renderpass();
-
-        imgui_renderer.record_commands(ImGui::GetDrawData(), cmd_list, swapchain_image, size_x, size_y);
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::ALL_GRAPHICS_READ_WRITE,
-            .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::PRESENT_SRC,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.complete();
-
-        device.submit_commands({
-            .command_lists = {std::move(cmd_list)},
-            .wait_binary_semaphores = {swapchain.get_acquire_semaphore()},
-            .signal_binary_semaphores = {swapchain.get_present_semaphore()},
-            .signal_timeline_semaphores = {{swapchain.get_gpu_timeline_semaphore(), swapchain.get_cpu_timeline_value()}},
-        });
-
-        device.present_frame({
-            .wait_binary_semaphores = {swapchain.get_present_semaphore()},
-            .swapchain = swapchain,
-        });
+        render_task_graph.execute({});
     }
 
     void update() {
@@ -339,7 +388,7 @@ struct DirectionalShadowApp : public App {
                     pcf_mode.value = "1";
                 }
 
-                raster_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+                raster_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
                     .vertex_shader_info = daxa::ShaderCompileInfo {
                         .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/directional_shadow/shader.glsl" }, },
                     },
@@ -382,10 +431,10 @@ struct DirectionalShadowApp : public App {
             device.destroy_image(depth_image);
             depth_image = device.create_image({
                 .format = daxa::Format::D32_SFLOAT,
-                .aspect = daxa::ImageAspectFlagBits::DEPTH,
                 .size = { size_x, size_y, 1 },
                 .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT,
             });
+            task_depth_image.set_images({.images = std::span{&depth_image, 1}});
 
             camera.camera.resize(size_x, size_y);
         }

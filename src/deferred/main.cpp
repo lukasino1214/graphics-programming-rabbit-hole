@@ -9,176 +9,53 @@
 
 #include "../model.hpp"
 
-struct DeferredApp : public App {
-    std::unique_ptr<Model> model;
-    std::shared_ptr<daxa::RasterPipeline> g_buffer_gather_pipeline;
-    std::shared_ptr<daxa::RasterPipeline> composition_pipeline;
-    daxa::ImageId depth_image;
-    daxa::ImageId albedo_image;
-    daxa::ImageId normal_image;
-    daxa::SamplerId sampler_id;
+struct GBufferGatherTask {
+    struct Uses {
+        daxa::ImageColorAttachment<> albedo_target = {};
+        daxa::ImageColorAttachment<> normal_target = {};
+        daxa::ImageDepthAttachment<> depth_target = {};
+    } uses = {};
 
-    ControlledCamera3D camera;
+    std::string_view name = "g buffer gather";
+    RasterPipelineHolder* pipeline = {};
+    Model* model = {};
+    ControlledCamera3D* camera = {};
 
-    f64 current_frame = glfwGetTime();
-    f64 last_frame = current_frame;
-    f64 delta_time;
-    bool paused = false;
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        u32 size_x = ti.get_device().info_image(uses.albedo_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.albedo_target.image()).size.y;
 
-    DeferredApp() : App("Deferred Example") {
-        g_buffer_gather_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
-            .vertex_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/deferred/g_buffer_gather.glsl" }, },
-            },
-            .fragment_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/deferred/g_buffer_gather.glsl" }, },
-            },
-            .color_attachments = {
-                { .format = swapchain.get_format() }, // albedo image
-                { .format = daxa::Format::R16G16B16A16_SFLOAT } // normal image
-            },
-            .depth_test = {
-                .depth_attachment_format = daxa::Format::D32_SFLOAT,
-                .enable_depth_test = true,
-                .enable_depth_write = true,
-            },
-            .raster = {
-                .face_culling = daxa::FaceCullFlagBits::FRONT_BIT
-            },
-            .push_constant_size = sizeof(GBufferGatherPush),
-        }).value();
-
-        composition_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
-            .vertex_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/deferred/composition.glsl" }, },
-            },
-            .fragment_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/deferred/composition.glsl" }, },
-            },
-            .color_attachments = {{ .format = swapchain.get_format() }},
-            .raster = {
-                .face_culling = daxa::FaceCullFlagBits::NONE
-            },
-            .push_constant_size = sizeof(CompositionPush),
-        }).value();
-
-        depth_image = device.create_image({
-            .format = daxa::Format::D32_SFLOAT,
-            .aspect = daxa::ImageAspectFlagBits::DEPTH,
-            .size = { size_x, size_y, 1 },
-            .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT,
-        });
-
-        albedo_image = device.create_image({
-            .format = swapchain.get_format(),
-            .aspect = daxa::ImageAspectFlagBits::COLOR,
-            .size = { size_x, size_y, 1 },
-            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
-        });
-
-        normal_image = device.create_image({
-            .format = daxa::Format::R16G16B16A16_SFLOAT,
-            .aspect = daxa::ImageAspectFlagBits::COLOR,
-            .size = { size_x, size_y, 1 },
-            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
-        });
-
-        sampler_id = device.create_sampler({
-            .magnification_filter = daxa::Filter::LINEAR,
-            .minification_filter = daxa::Filter::LINEAR,
-            .mipmap_filter = daxa::Filter::LINEAR,
-            .address_mode_u = daxa::SamplerAddressMode::CLAMP_TO_EDGE,
-            .address_mode_v = daxa::SamplerAddressMode::CLAMP_TO_EDGE,
-            .address_mode_w = daxa::SamplerAddressMode::CLAMP_TO_EDGE,
-            .mip_lod_bias = 0.0f,
-            .enable_anisotropy = true,
-            .max_anisotropy = 16.0f,
-            .enable_compare = false,
-            .compare_op = daxa::CompareOp::ALWAYS,
-            .min_lod = 0.0f,
-            .max_lod = 1.0f,
-            .enable_unnormalized_coordinates = false,
-        });
-
-        camera.camera.resize(size_x, size_y);
-
-        model = std::make_unique<Model>(device, "assets/Sponza/glTF/Sponza.gltf");
-    }
-
-    ~DeferredApp() {
-        device.destroy_image(depth_image);
-        device.destroy_image(albedo_image);
-        device.destroy_image(normal_image);
-        device.destroy_sampler(sampler_id);
-    }
-
-    void render() {
-        auto swapchain_image = swapchain.acquire_next_image();
-        if(swapchain_image.is_empty()) { return; }
-
-        auto cmd_list = device.create_command_list({.name = "render command list"});
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_slice = {.image_aspect = daxa::ImageAspectFlagBits::DEPTH },
-            .image_id = depth_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_id = albedo_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_id = normal_image
-        });
-
-        // g buffer gather
         cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
             .color_attachments = { 
                 daxa::RenderAttachmentInfo {
-                    .image_view = albedo_image.default_view(),
+                    .image_view = uses.albedo_target.view(),
                     .load_op = daxa::AttachmentLoadOp::CLEAR,
                     .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
                 },
                 daxa::RenderAttachmentInfo {
-                    .image_view = normal_image.default_view(),
+                    .image_view = uses.normal_target.view(),
                     .load_op = daxa::AttachmentLoadOp::CLEAR,
                     .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f},
                 },
             },
             .depth_attachment = {{
-                .image_view = depth_image.default_view(),
+                .image_view = uses.depth_target.view(),
                 .load_op = daxa::AttachmentLoadOp::CLEAR,
                 .clear_value = daxa::DepthValue{1.0f, 0},
             }},
             .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
         });
-        cmd_list.set_pipeline(*g_buffer_gather_pipeline);
+        cmd_list.set_pipeline(*pipeline->pipeline);
 
         glm::mat4 model_mat = glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 0.0f, 0.0f}) * glm::scale(glm::mat4{1.0f}, glm::vec3{0.01f, 0.01f, 0.01f});
-
-        glm::mat4 mvp = camera.camera.get_vp() * model_mat;
+        glm::mat4 mvp = camera->camera.get_vp() * model_mat;
 
         for(auto& primitive : model->primitives) {
             cmd_list.push_constant(GBufferGatherPush {
                 .mvp = *reinterpret_cast<f32mat4x4*>(&mvp),
-                .vertices = device.get_device_address(model->vertex_buffer),
-                .materials = device.get_device_address(model->material_buffer),
+                .vertices = ti.get_device().get_device_address(model->vertex_buffer),
+                .materials = ti.get_device().get_device_address(model->material_buffer),
                 .material_index = primitive.material_index
             });
 
@@ -202,70 +79,219 @@ struct DeferredApp : public App {
         }
 
         cmd_list.end_renderpass();
+    }
+};
 
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_READ,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_id = albedo_image
-        });
+struct CompositionTask {
+    struct Uses {
+        daxa::ImageColorAttachment<> render_target = {};
+        daxa::ImageShaderRead<> albedo_target = {};
+        daxa::ImageShaderRead<> normal_target = {};
+        daxa::ImageShaderRead<> depth_target = {};
+    } uses = {};
 
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_READ,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_id = normal_image
-        });
+    std::string_view name = "composition";
+    RasterPipelineHolder* pipeline = {};
+    daxa::SamplerId sampler_id = {};
 
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::FRAGMENT_SHADER_WRITE,
-            .dst_access = daxa::AccessConsts::FRAGMENT_SHADER_READ,
-            .src_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
-            .image_id = depth_image
-        });
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        u32 size_x = ti.get_device().info_image(uses.albedo_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.albedo_target.image()).size.y;
 
-        // composition
         cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
             .color_attachments = { daxa::RenderAttachmentInfo {
-                .image_view = swapchain_image.default_view(),
+                .image_view = uses.render_target.view(),
                 .load_op = daxa::AttachmentLoadOp::CLEAR,
                 .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f},
             }},
             .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
         });
-        cmd_list.set_pipeline(*composition_pipeline);
+        cmd_list.set_pipeline(*pipeline->pipeline);
         cmd_list.push_constant(CompositionPush {
-            .albedo_image = albedo_image.default_view(),
-            .normal_image = normal_image.default_view(),
-            .depth_image = depth_image.default_view(),
+            .albedo_image = uses.albedo_target.view(),
+            .normal_image = uses.normal_target.view(),
+            .depth_image = uses.depth_target.view(),
             .sampler_id = sampler_id
         });
         cmd_list.draw({ .vertex_count = 3 });
         cmd_list.end_renderpass();
+    }
+};
 
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::ALL_GRAPHICS_READ_WRITE,
-            .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::PRESENT_SRC,
-            .image_id = swapchain_image
+struct DeferredApp : public App {
+    std::unique_ptr<Model> model = {};
+
+    RasterPipelineHolder g_buffer_gather_pipeline = {};
+    RasterPipelineHolder composition_pipeline = {};
+
+    daxa::ImageId depth_image = {};
+    daxa::TaskImage task_depth_image = {};
+    daxa::ImageId albedo_image = {};
+    daxa::TaskImage task_albedo_image = {};
+    daxa::ImageId normal_image = {};
+    daxa::TaskImage task_normal_image = {};
+
+    daxa::SamplerId sampler_id = {};
+
+    ControlledCamera3D camera;
+
+    daxa::TaskImage task_swapchain_image = {};
+    daxa::TaskGraph render_task_graph = {};
+
+    f64 current_frame = glfwGetTime();
+    f64 last_frame = current_frame;
+    f64 delta_time;
+    bool paused = false;
+
+    DeferredApp() : App("Deferred Example") {
+        g_buffer_gather_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+            .vertex_shader_info = daxa::ShaderCompileInfo {
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/deferred/g_buffer_gather.glsl" }, },
+            },
+            .fragment_shader_info = daxa::ShaderCompileInfo {
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/deferred/g_buffer_gather.glsl" }, },
+            },
+            .color_attachments = {
+                { .format = swapchain.get_format() }, // albedo image
+                { .format = daxa::Format::R16G16B16A16_SFLOAT } // normal image
+            },
+            .depth_test = {
+                .depth_attachment_format = daxa::Format::D32_SFLOAT,
+                .enable_depth_test = true,
+                .enable_depth_write = true,
+            },
+            .raster = {
+                .face_culling = daxa::FaceCullFlagBits::FRONT_BIT
+            },
+            .push_constant_size = sizeof(GBufferGatherPush),
+        }).value();
+
+        composition_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+            .vertex_shader_info = daxa::ShaderCompileInfo {
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/deferred/composition.glsl" }, },
+            },
+            .fragment_shader_info = daxa::ShaderCompileInfo {
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/deferred/composition.glsl" }, },
+            },
+            .color_attachments = {{ .format = swapchain.get_format() }},
+            .raster = {
+                .face_culling = daxa::FaceCullFlagBits::NONE
+            },
+            .push_constant_size = sizeof(CompositionPush),
+        }).value();
+
+        depth_image = device.create_image({
+            .format = daxa::Format::D32_SFLOAT,
+            .size = { size_x, size_y, 1 },
+            .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
+            .name = "depth image"
         });
 
-        cmd_list.complete();
+        task_depth_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&depth_image, 1}},
+            .swapchain_image = false,
+            .name = "task depth image"
+        }};
 
-        device.submit_commands({
-            .command_lists = {std::move(cmd_list)},
-            .wait_binary_semaphores = {swapchain.get_acquire_semaphore()},
-            .signal_binary_semaphores = {swapchain.get_present_semaphore()},
-            .signal_timeline_semaphores = {{swapchain.get_gpu_timeline_semaphore(), swapchain.get_cpu_timeline_value()}},
+        albedo_image = device.create_image({
+            .format = swapchain.get_format(),
+            .size = { size_x, size_y, 1 },
+            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
         });
 
-        device.present_frame({
-            .wait_binary_semaphores = {swapchain.get_present_semaphore()},
+        task_albedo_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&albedo_image, 1}},
+            .swapchain_image = false,
+            .name = "task albedo image"
+        }};
+
+        normal_image = device.create_image({
+            .format = daxa::Format::R16G16B16A16_SFLOAT,
+            .size = { size_x, size_y, 1 },
+            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
+        });
+
+        task_normal_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&normal_image, 1}},
+            .swapchain_image = false,
+            .name = "task normal image"
+        }};
+
+        sampler_id = device.create_sampler({
+            .magnification_filter = daxa::Filter::LINEAR,
+            .minification_filter = daxa::Filter::LINEAR,
+            .mipmap_filter = daxa::Filter::LINEAR,
+            .address_mode_u = daxa::SamplerAddressMode::CLAMP_TO_EDGE,
+            .address_mode_v = daxa::SamplerAddressMode::CLAMP_TO_EDGE,
+            .address_mode_w = daxa::SamplerAddressMode::CLAMP_TO_EDGE,
+            .mip_lod_bias = 0.0f,
+            .enable_anisotropy = true,
+            .max_anisotropy = 16.0f,
+            .enable_compare = false,
+            .compare_op = daxa::CompareOp::ALWAYS,
+            .min_lod = 0.0f,
+            .max_lod = 1.0f,
+            .enable_unnormalized_coordinates = false,
+        });
+
+        camera.camera.resize(size_x, size_y);
+
+        model = std::make_unique<Model>(device, "assets/Sponza/glTF/Sponza.gltf");
+
+        render_task_graph = daxa::TaskGraph({
+            .device = device,
             .swapchain = swapchain,
+            .name = "render task graph" 
         });
+
+        task_swapchain_image = daxa::TaskImage{{.swapchain_image = true, .name = "swapchain image"}};
+
+        render_task_graph.use_persistent_image(task_albedo_image);
+        render_task_graph.use_persistent_image(task_normal_image);
+        render_task_graph.use_persistent_image(task_depth_image);
+        render_task_graph.use_persistent_image(task_swapchain_image);
+
+        render_task_graph.add_task(GBufferGatherTask {
+            .uses = {
+                .albedo_target = task_albedo_image,
+                .normal_target = task_normal_image,
+                .depth_target = task_depth_image
+            },
+            .pipeline = &g_buffer_gather_pipeline,
+            .model = model.get(),
+            .camera = &camera
+        });
+
+        render_task_graph.add_task(CompositionTask {
+            .uses = {
+                .render_target = task_swapchain_image,
+                .albedo_target = task_albedo_image,
+                .normal_target = task_normal_image,
+                .depth_target = task_depth_image
+            },
+            .pipeline = &composition_pipeline,
+            .sampler_id = sampler_id
+        });
+
+        render_task_graph.submit({});
+        render_task_graph.present({});
+        render_task_graph.complete({});
+    }
+
+    ~DeferredApp() {
+        device.destroy_image(depth_image);
+        device.destroy_image(albedo_image);
+        device.destroy_image(normal_image);
+        device.destroy_sampler(sampler_id);
+    }
+
+    void render() {
+        auto swapchain_image = swapchain.acquire_next_image();
+        task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
+        if(swapchain_image.is_empty()) { return; }
+
+        render_task_graph.execute({});
     }
 
     void update() {
@@ -294,26 +320,27 @@ struct DeferredApp : public App {
             device.destroy_image(depth_image);
             depth_image = device.create_image({
                 .format = daxa::Format::D32_SFLOAT,
-                .aspect = daxa::ImageAspectFlagBits::DEPTH,
                 .size = { size_x, size_y, 1 },
-                .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT,
+                .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
+                .name = "depth image"
             });
+            task_depth_image.set_images({.images = std::span{&depth_image, 1}});
 
             device.destroy_image(albedo_image);
             albedo_image = device.create_image({
                 .format = swapchain.get_format(),
-                .aspect = daxa::ImageAspectFlagBits::COLOR,
                 .size = { size_x, size_y, 1 },
-                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             });
+            task_albedo_image.set_images({.images = std::span{&albedo_image, 1}});
 
             device.destroy_image(normal_image);
             normal_image = device.create_image({
                 .format = daxa::Format::R16G16B16A16_SFLOAT,
-                .aspect = daxa::ImageAspectFlagBits::COLOR,
                 .size = { size_x, size_y, 1 },
-                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_READ_ONLY,
+                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             });
+            task_normal_image.set_images({.images = std::span{&normal_image, 1}});
 
             camera.camera.resize(size_x, size_y);
         }

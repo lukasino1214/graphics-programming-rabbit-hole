@@ -13,12 +13,11 @@ Texture::Texture(daxa::Device device, u32 size_x, u32 size_y, unsigned char* dat
     this->image_id = device.create_image({
         .dimensions = 2,
         .format = (type == Type::UNORM) ? daxa::Format::R8G8B8A8_UNORM : daxa::Format::R8G8B8A8_SRGB,
-        .aspect = daxa::ImageAspectFlagBits::COLOR,
         .size = { static_cast<u32>(size_x), static_cast<u32>(size_y), 1 },
         .mip_level_count = mip_levels,
         .array_layer_count = 1,
         .sample_count = 1,
-        .usage = daxa::ImageUsageFlagBits::SHADER_READ_ONLY | daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::TRANSFER_SRC,
+        .usage = daxa::ImageUsageFlagBits::SHADER_SAMPLED | daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::TRANSFER_SRC,
         .allocate_info = daxa::MemoryFlagBits::DEDICATED_MEMORY
     });
 
@@ -56,7 +55,6 @@ Texture::Texture(daxa::Device device, u32 size_x, u32 size_y, unsigned char* dat
         .src_layout = daxa::ImageLayout::UNDEFINED,
         .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .image_slice = {
-            .image_aspect = daxa::ImageAspectFlagBits::COLOR,
             .base_mip_level = 0,
             .level_count = mip_levels,
             .base_array_layer = 0,
@@ -71,7 +69,6 @@ Texture::Texture(daxa::Device device, u32 size_x, u32 size_y, unsigned char* dat
         .image = image_id,
         .image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .image_slice = {
-            .image_aspect = daxa::ImageAspectFlagBits::COLOR,
             .mip_level = 0,
             .base_array_layer = 0,
             .layer_count = 1,
@@ -100,7 +97,6 @@ Texture::Texture(daxa::Device device, u32 size_x, u32 size_y, unsigned char* dat
             .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
             .dst_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
             .image_slice = {
-                .image_aspect = image_info.aspect,
                 .base_mip_level = i - 1,
                 .level_count = 1,
                 .base_array_layer = 0,
@@ -121,14 +117,12 @@ Texture::Texture(daxa::Device device, u32 size_x, u32 size_y, unsigned char* dat
             .dst_image = image_id,
             .dst_image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
             .src_slice = {
-                .image_aspect = image_info.aspect,
                 .mip_level = i - 1,
                 .base_array_layer = 0,
                 .layer_count = 1,
             },
             .src_offsets = {{{0, 0, 0}, {mip_size[0], mip_size[1], mip_size[2]}}},
             .dst_slice = {
-                .image_aspect = image_info.aspect,
                 .mip_level = i,
                 .base_array_layer = 0,
                 .layer_count = 1,
@@ -143,7 +137,6 @@ Texture::Texture(daxa::Device device, u32 size_x, u32 size_y, unsigned char* dat
             .src_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
             .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
             .image_slice = {
-                .image_aspect = image_info.aspect,
                 .base_mip_level = i - 1,
                 .level_count = 1,
                 .base_array_layer = 0,
@@ -161,7 +154,6 @@ Texture::Texture(daxa::Device device, u32 size_x, u32 size_y, unsigned char* dat
         .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
         .image_slice = {
-            .image_aspect = image_info.aspect,
             .base_mip_level = image_info.mip_level_count - 1,
             .level_count = 1,
             .base_array_layer = 0,
@@ -193,12 +185,11 @@ Texture::Texture(daxa::Device device, const std::string& path, Type type) : devi
     this->image_id = device.create_image({
         .dimensions = 2,
         .format = (type == Type::UNORM) ? daxa::Format::R8G8B8A8_UNORM : daxa::Format::R8G8B8A8_SRGB,
-        .aspect = daxa::ImageAspectFlagBits::COLOR,
         .size = { static_cast<u32>(size_x), static_cast<u32>(size_y), 1 },
         .mip_level_count = mip_levels,
         .array_layer_count = 1,
         .sample_count = 1,
-        .usage = daxa::ImageUsageFlagBits::SHADER_READ_ONLY | daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::TRANSFER_SRC,
+        .usage = daxa::ImageUsageFlagBits::SHADER_SAMPLED | daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::TRANSFER_SRC,
         .allocate_info = daxa::MemoryFlagBits::DEDICATED_MEMORY
     });
 
@@ -238,7 +229,6 @@ Texture::Texture(daxa::Device device, const std::string& path, Type type) : devi
         .src_layout = daxa::ImageLayout::UNDEFINED,
         .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .image_slice = {
-            .image_aspect = daxa::ImageAspectFlagBits::COLOR,
             .base_mip_level = 0,
             .level_count = mip_levels,
             .base_array_layer = 0,
@@ -253,7 +243,6 @@ Texture::Texture(daxa::Device device, const std::string& path, Type type) : devi
         .image = image_id,
         .image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .image_slice = {
-            .image_aspect = daxa::ImageAspectFlagBits::COLOR,
             .mip_level = 0,
             .base_array_layer = 0,
             .layer_count = 1,
@@ -282,7 +271,6 @@ Texture::Texture(daxa::Device device, const std::string& path, Type type) : devi
             .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
             .dst_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
             .image_slice = {
-                .image_aspect = image_info.aspect,
                 .base_mip_level = i - 1,
                 .level_count = 1,
                 .base_array_layer = 0,
@@ -303,14 +291,12 @@ Texture::Texture(daxa::Device device, const std::string& path, Type type) : devi
             .dst_image = image_id,
             .dst_image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
             .src_slice = {
-                .image_aspect = image_info.aspect,
                 .mip_level = i - 1,
                 .base_array_layer = 0,
                 .layer_count = 1,
             },
             .src_offsets = {{{0, 0, 0}, {mip_size[0], mip_size[1], mip_size[2]}}},
             .dst_slice = {
-                .image_aspect = image_info.aspect,
                 .mip_level = i,
                 .base_array_layer = 0,
                 .layer_count = 1,
@@ -325,7 +311,6 @@ Texture::Texture(daxa::Device device, const std::string& path, Type type) : devi
             .src_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
             .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
             .image_slice = {
-                .image_aspect = image_info.aspect,
                 .base_mip_level = i - 1,
                 .level_count = 1,
                 .base_array_layer = 0,
@@ -343,7 +328,6 @@ Texture::Texture(daxa::Device device, const std::string& path, Type type) : devi
         .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
         .image_slice = {
-            .image_aspect = image_info.aspect,
             .base_mip_level = image_info.mip_level_count - 1,
             .level_count = 1,
             .base_array_layer = 0,
@@ -372,12 +356,11 @@ auto Texture::load_texture(daxa::Device device, u32 size_x, u32 size_y, unsigned
     daxa::ImageId image_id = device.create_image({
         .dimensions = 2,
         .format = (type == Type::UNORM) ? daxa::Format::R8G8B8A8_UNORM : daxa::Format::R8G8B8A8_SRGB,
-        .aspect = daxa::ImageAspectFlagBits::COLOR,
         .size = { static_cast<u32>(size_x), static_cast<u32>(size_y), 1 },
         .mip_level_count = mip_levels,
         .array_layer_count = 1,
         .sample_count = 1,
-        .usage = daxa::ImageUsageFlagBits::SHADER_READ_ONLY | daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::TRANSFER_SRC,
+        .usage = daxa::ImageUsageFlagBits::SHADER_SAMPLED | daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::TRANSFER_SRC,
         .allocate_info = daxa::MemoryFlagBits::DEDICATED_MEMORY
     });
 
@@ -415,7 +398,6 @@ auto Texture::load_texture(daxa::Device device, u32 size_x, u32 size_y, unsigned
         .src_layout = daxa::ImageLayout::UNDEFINED,
         .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .image_slice = {
-            .image_aspect = daxa::ImageAspectFlagBits::COLOR,
             .base_mip_level = 0,
             .level_count = mip_levels,
             .base_array_layer = 0,
@@ -430,7 +412,6 @@ auto Texture::load_texture(daxa::Device device, u32 size_x, u32 size_y, unsigned
         .image = image_id,
         .image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .image_slice = {
-            .image_aspect = daxa::ImageAspectFlagBits::COLOR,
             .mip_level = 0,
             .base_array_layer = 0,
             .layer_count = 1,
@@ -459,7 +440,6 @@ auto Texture::load_texture(daxa::Device device, u32 size_x, u32 size_y, unsigned
             .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
             .dst_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
             .image_slice = {
-                .image_aspect = image_info.aspect,
                 .base_mip_level = i - 1,
                 .level_count = 1,
                 .base_array_layer = 0,
@@ -480,14 +460,12 @@ auto Texture::load_texture(daxa::Device device, u32 size_x, u32 size_y, unsigned
             .dst_image = image_id,
             .dst_image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
             .src_slice = {
-                .image_aspect = image_info.aspect,
                 .mip_level = i - 1,
                 .base_array_layer = 0,
                 .layer_count = 1,
             },
             .src_offsets = {{{0, 0, 0}, {mip_size[0], mip_size[1], mip_size[2]}}},
             .dst_slice = {
-                .image_aspect = image_info.aspect,
                 .mip_level = i,
                 .base_array_layer = 0,
                 .layer_count = 1,
@@ -502,7 +480,6 @@ auto Texture::load_texture(daxa::Device device, u32 size_x, u32 size_y, unsigned
             .src_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
             .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
             .image_slice = {
-                .image_aspect = image_info.aspect,
                 .base_mip_level = i - 1,
                 .level_count = 1,
                 .base_array_layer = 0,
@@ -520,7 +497,6 @@ auto Texture::load_texture(daxa::Device device, u32 size_x, u32 size_y, unsigned
         .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
         .image_slice = {
-            .image_aspect = image_info.aspect,
             .base_mip_level = image_info.mip_level_count - 1,
             .level_count = 1,
             .base_array_layer = 0,
@@ -554,12 +530,11 @@ auto Texture::load_texture(daxa::Device device, const std::string& file_path, Ty
     daxa::ImageId image_id = device.create_image({
         .dimensions = 2,
         .format = (type == Type::UNORM) ? daxa::Format::R8G8B8A8_UNORM : daxa::Format::R8G8B8A8_SRGB,
-        .aspect = daxa::ImageAspectFlagBits::COLOR,
         .size = { static_cast<u32>(size_x), static_cast<u32>(size_y), 1 },
         .mip_level_count = mip_levels,
         .array_layer_count = 1,
         .sample_count = 1,
-        .usage = daxa::ImageUsageFlagBits::SHADER_READ_ONLY | daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::TRANSFER_SRC,
+        .usage = daxa::ImageUsageFlagBits::SHADER_SAMPLED | daxa::ImageUsageFlagBits::TRANSFER_DST | daxa::ImageUsageFlagBits::TRANSFER_SRC,
         .allocate_info = daxa::MemoryFlagBits::DEDICATED_MEMORY
     });
 
@@ -597,7 +572,6 @@ auto Texture::load_texture(daxa::Device device, const std::string& file_path, Ty
         .src_layout = daxa::ImageLayout::UNDEFINED,
         .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .image_slice = {
-            .image_aspect = daxa::ImageAspectFlagBits::COLOR,
             .base_mip_level = 0,
             .level_count = mip_levels,
             .base_array_layer = 0,
@@ -612,7 +586,6 @@ auto Texture::load_texture(daxa::Device device, const std::string& file_path, Ty
         .image = image_id,
         .image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .image_slice = {
-            .image_aspect = daxa::ImageAspectFlagBits::COLOR,
             .mip_level = 0,
             .base_array_layer = 0,
             .layer_count = 1,
@@ -641,7 +614,6 @@ auto Texture::load_texture(daxa::Device device, const std::string& file_path, Ty
             .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
             .dst_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
             .image_slice = {
-                .image_aspect = image_info.aspect,
                 .base_mip_level = i - 1,
                 .level_count = 1,
                 .base_array_layer = 0,
@@ -662,14 +634,12 @@ auto Texture::load_texture(daxa::Device device, const std::string& file_path, Ty
             .dst_image = image_id,
             .dst_image_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
             .src_slice = {
-                .image_aspect = image_info.aspect,
                 .mip_level = i - 1,
                 .base_array_layer = 0,
                 .layer_count = 1,
             },
             .src_offsets = {{{0, 0, 0}, {mip_size[0], mip_size[1], mip_size[2]}}},
             .dst_slice = {
-                .image_aspect = image_info.aspect,
                 .mip_level = i,
                 .base_array_layer = 0,
                 .layer_count = 1,
@@ -684,7 +654,6 @@ auto Texture::load_texture(daxa::Device device, const std::string& file_path, Ty
             .src_layout = daxa::ImageLayout::TRANSFER_SRC_OPTIMAL,
             .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
             .image_slice = {
-                .image_aspect = image_info.aspect,
                 .base_mip_level = i - 1,
                 .level_count = 1,
                 .base_array_layer = 0,
@@ -702,7 +671,6 @@ auto Texture::load_texture(daxa::Device device, const std::string& file_path, Ty
         .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
         .dst_layout = daxa::ImageLayout::READ_ONLY_OPTIMAL,
         .image_slice = {
-            .image_aspect = image_info.aspect,
             .base_mip_level = image_info.mip_level_count - 1,
             .level_count = 1,
             .base_array_layer = 0,

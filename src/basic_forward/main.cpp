@@ -7,19 +7,14 @@
 
 #include "shared.inl"
 
-struct BasicForwardApp : public App {
-    daxa::BufferId vertex_buffer;
-    std::shared_ptr<daxa::RasterPipeline> raster_pipeline;
-    daxa::ImageId depth_image;
+struct UploadVertexTask {
+    struct Uses {
+        daxa::BufferTransferWrite vertex_buffer = {};
+    } uses = {};
 
-    ControlledCamera3D camera;
+    std::string_view name = "upload vertices";
 
-    f64 current_frame = glfwGetTime();
-    f64 last_frame = current_frame;
-    f64 delta_time;
-    bool paused = false;
-
-    BasicForwardApp() : App("Basic Forward Example") {
+    void callback(daxa::TaskInterface ti) {
         std::vector<Vertex> vertices = {
             {{-0.5f, -0.5f, -0.5f}},
             {{0.5f, -0.5f, -0.5f}},
@@ -64,42 +59,94 @@ struct BasicForwardApp : public App {
             {{-0.5f,  0.5f, -0.5f}},
         };
 
-        vertex_buffer = device.create_buffer({
+        daxa::CommandList cmd_list = ti.get_command_list();
+
+        auto staging_buffer_id = ti.get_device().create_buffer(daxa::BufferInfo {
             .size = static_cast<u32>(vertices.size() * sizeof(Vertex)),
-            .allocate_info = daxa::MemoryFlagBits::DEDICATED_MEMORY,
+            .allocate_info = daxa::AutoAllocInfo{daxa::MemoryFlagBits::HOST_ACCESS_RANDOM},
+            .name = "staging buffer"
+        });
+
+        cmd_list.destroy_buffer_deferred(staging_buffer_id);
+
+        auto ptr = ti.get_device().get_host_address_as<Vertex>(staging_buffer_id);
+        std::memcpy(ptr, vertices.data(), vertices.size() * sizeof(Vertex));
+
+        cmd_list.copy_buffer_to_buffer({
+            .src_buffer = staging_buffer_id,
+            .dst_buffer = uses.vertex_buffer.buffer(),
+            .size = static_cast<u32>(vertices.size() * sizeof(Vertex)),
+        });
+    }
+};
+
+struct RenderTask {
+    struct Uses {
+        daxa::BufferVertexShaderRead vertex_buffer = {};
+        daxa::ImageColorAttachment<> render_target = {};
+        daxa::ImageDepthAttachment<> depth_image = {};
+    } uses = {};
+
+    std::string_view name = "render";
+    RasterPipelineHolder* pipeline = {};
+    ControlledCamera3D* camera = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        u32 size_x = ti.get_device().info_image(uses.render_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.render_target.image()).size.y;
+
+        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
+            .color_attachments = { daxa::RenderAttachmentInfo {
+                .image_view = uses.render_target.view(),
+                .load_op = daxa::AttachmentLoadOp::CLEAR,
+                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+            }},
+            .depth_attachment = {{
+                .image_view = uses.depth_image.view(),
+                .load_op = daxa::AttachmentLoadOp::CLEAR,
+                .clear_value = daxa::DepthValue{1.0f, 0},
+            }},
+            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
+        });
+        cmd_list.set_pipeline(*pipeline->pipeline);
+
+        glm::mat4 model = glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 0.0f, 0.0f});
+        glm::mat4 mvp = camera->camera.get_vp() * model;
+
+        cmd_list.push_constant(DrawPush {
+            .mvp = *reinterpret_cast<f32mat4x4*>(&mvp),
+            .vertices = ti.get_device().get_device_address(uses.vertex_buffer.buffer())
+        });
+        cmd_list.draw({ .vertex_count = 36});
+        cmd_list.end_renderpass();
+    }
+};
+
+struct BasicForwardApp : public App {
+    daxa::BufferId vertex_buffer = {};
+    daxa::TaskBuffer task_vertex_buffer = {};
+    RasterPipelineHolder raster_pipeline = {};
+    daxa::ImageId depth_image = {};
+    daxa::TaskImage task_depth_image = {};
+    daxa::TaskImage task_swapchain_image = {};
+    daxa::TaskGraph render_task_graph = {};
+
+    ControlledCamera3D camera;
+
+    f64 current_frame = glfwGetTime();
+    f64 last_frame = current_frame;
+    f64 delta_time;
+    bool paused = false;
+
+    BasicForwardApp() : App("Basic Forward Example") {
+        vertex_buffer = device.create_buffer({
+            .size = static_cast<u32>(36 * sizeof(Vertex)),
+            .allocate_info = daxa::AutoAllocInfo{daxa::MemoryFlagBits::DEDICATED_MEMORY},
             .name = "vertex buffer"
         });
 
-        daxa::BufferId vertex_staging_buffer = device.create_buffer({
-            .size = static_cast<u32>(vertices.size() * sizeof(Vertex)),
-            .allocate_info = daxa::MemoryFlagBits::HOST_ACCESS_RANDOM,
-            .name = "staging vertex buffer"
-        });
-
-        {
-            auto ptr = device.get_host_address_as<Vertex>(vertex_staging_buffer);
-            std::memcpy(ptr, vertices.data(), vertices.size() * sizeof(Vertex));
-        }
-
-
-        auto cmd_list = device.create_command_list({.name = "upload command list"});
-
-        cmd_list.copy_buffer_to_buffer( daxa::BufferCopyInfo {
-            .src_buffer = vertex_staging_buffer,
-            .src_offset = 0,
-            .dst_buffer = vertex_buffer,
-            .dst_offset = 0,
-            .size = static_cast<u32>(vertices.size() * sizeof(Vertex))
-        });
-
-        cmd_list.complete();
-        device.submit_commands({
-            .command_lists = {std::move(cmd_list)},
-        });
-        device.wait_idle();
-        device.destroy_buffer(vertex_staging_buffer);
-
-        raster_pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+        raster_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/basic_forward/shader.glsl" }, },
             },
@@ -120,86 +167,80 @@ struct BasicForwardApp : public App {
 
         depth_image = device.create_image({
             .format = daxa::Format::D32_SFLOAT,
-            .aspect = daxa::ImageAspectFlagBits::DEPTH,
             .size = { size_x, size_y, 1 },
             .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT,
         });
+
+        task_depth_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&depth_image, 1}},
+            .swapchain_image = false,
+            .name = "task render image"
+        }};
+
+        task_vertex_buffer = daxa::TaskBuffer({
+            .initial_buffers = {.buffers = std::span{&vertex_buffer, 1}},
+            .name = "task buffer",
+        });
+
+        auto upload_task_graph = daxa::TaskGraph({
+            .device = device,
+            .name = "upload task graph",
+        });
+
+        upload_task_graph.use_persistent_buffer(task_vertex_buffer);
+
+        upload_task_graph.add_task(UploadVertexTask{
+            .uses = {
+                .vertex_buffer = task_vertex_buffer,
+            },
+        });
+
+        upload_task_graph.submit({});
+        upload_task_graph.complete({});
+        upload_task_graph.execute({});
+
+        task_swapchain_image = daxa::TaskImage{{.swapchain_image = true, .name = "swapchain image"}};
+
+        render_task_graph = daxa::TaskGraph({
+            .device = device,
+            .swapchain = swapchain,
+            .name = "render task graph" 
+        });
+
+        render_task_graph.use_persistent_buffer(task_vertex_buffer);
+        render_task_graph.use_persistent_image(task_swapchain_image);
+        render_task_graph.use_persistent_image(task_depth_image);
+
+        render_task_graph.add_task(RenderTask {
+            .uses = {
+                .vertex_buffer = task_vertex_buffer,
+                .render_target = task_swapchain_image,
+                .depth_image = task_depth_image
+            },
+            .pipeline = &raster_pipeline,
+            .camera = &camera
+        });
+
+        render_task_graph.submit({});
+        render_task_graph.present({});
+        render_task_graph.complete({});
 
         camera.camera.resize(size_x, size_y);
     }
 
     ~BasicForwardApp() {
+        device.wait_idle();
+        device.collect_garbage();
         device.destroy_buffer(vertex_buffer);
         device.destroy_image(depth_image);
     }
 
     void render() {
         auto swapchain_image = swapchain.acquire_next_image();
+        task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
         if(swapchain_image.is_empty()) { return; }
 
-        auto cmd_list = device.create_command_list({.name = "render command list"});
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.pipeline_barrier_image_transition({
-            .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
-            .src_layout = daxa::ImageLayout::UNDEFINED,
-            .dst_layout = daxa::ImageLayout::ATTACHMENT_OPTIMAL,
-            .image_slice = {.image_aspect = daxa::ImageAspectFlagBits::DEPTH },
-            .image_id = depth_image
-        });
-
-        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
-            .color_attachments = { daxa::RenderAttachmentInfo {
-                .image_view = {swapchain_image},
-                .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
-            }},
-            .depth_attachment = {{
-                .image_view = depth_image.default_view(),
-                .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = daxa::DepthValue{1.0f, 0},
-            }},
-            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
-        });
-        cmd_list.set_pipeline(*raster_pipeline);
-
-        glm::mat4 model = glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 0.0f, 0.0f});
-
-        glm::mat4 mvp = camera.camera.get_vp() * model;
-
-        cmd_list.push_constant(DrawPush {
-            .mvp = *reinterpret_cast<f32mat4x4*>(&mvp),
-            .vertices = device.get_device_address(vertex_buffer)
-        });
-        cmd_list.draw({ .vertex_count = 36});
-        cmd_list.end_renderpass();
-
-        cmd_list.pipeline_barrier_image_transition({
-            .src_access = daxa::AccessConsts::ALL_GRAPHICS_READ_WRITE,
-            .src_layout = daxa::ImageLayout::TRANSFER_DST_OPTIMAL,
-            .dst_layout = daxa::ImageLayout::PRESENT_SRC,
-            .image_id = swapchain_image
-        });
-
-        cmd_list.complete();
-
-        device.submit_commands({
-            .command_lists = {std::move(cmd_list)},
-            .wait_binary_semaphores = {swapchain.get_acquire_semaphore()},
-            .signal_binary_semaphores = {swapchain.get_present_semaphore()},
-            .signal_timeline_semaphores = {{swapchain.get_gpu_timeline_semaphore(), swapchain.get_cpu_timeline_value()}},
-        });
-
-        device.present_frame({
-            .wait_binary_semaphores = {swapchain.get_present_semaphore()},
-            .swapchain = swapchain,
-        });
+        render_task_graph.execute({});
     }
 
     void update() {
@@ -228,10 +269,10 @@ struct BasicForwardApp : public App {
             device.destroy_image(depth_image);
             depth_image = device.create_image({
                 .format = daxa::Format::D32_SFLOAT,
-                .aspect = daxa::ImageAspectFlagBits::DEPTH,
                 .size = { size_x, size_y, 1 },
                 .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT,
             });
+            task_depth_image.set_images({.images = std::span{&depth_image, 1}});
 
             camera.camera.resize(size_x, size_y);
         }

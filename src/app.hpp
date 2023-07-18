@@ -2,6 +2,7 @@
 
 #include <daxa/daxa.hpp>
 #include <daxa/utils/pipeline_manager.hpp>
+#include <daxa/utils/task_graph.hpp>
 using namespace daxa::types;
 #include <GLFW/glfw3.h>
 #if defined(_WIN32)
@@ -13,6 +14,14 @@ using HWND = void*;
 #define GLFW_EXPOSE_NATIVE_WAYLAND
 #endif
 #include <GLFW/glfw3native.h>
+
+struct RasterPipelineHolder {
+    std::shared_ptr<daxa::RasterPipeline> pipeline = {};
+};
+
+struct ComputePipelineHolder {
+    std::shared_ptr<daxa::ComputePipeline> pipeline = {};
+};
 
 struct App {
     App(const std::string_view& name) {

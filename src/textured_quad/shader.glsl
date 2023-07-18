@@ -21,6 +21,7 @@ layout(location = 0) out f32vec4 color;
 
 void main() {
     color = f32vec4(texture(daxa_sampler2D(push.image_view_id, push.sampler_id), in_uv).rgb, 1.0);
+    //color = f32vec4(1.0);
 }
 
 #endif
