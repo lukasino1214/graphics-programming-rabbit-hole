@@ -8,17 +8,16 @@
 - [x] basic forward rendering
 - [x] forward rendering
 - [x] deferred rendering
-- [ ] tiled forward rendering
-- [ ] tiled feferred rendering
+- [ ] tiled forward rendering - fix
 - [ ] clustered forward rendering
 - [x] screen space ambient occlusion
 - [ ] horizon based ambient occlusion
 - [ ] horizon based ambient occlusion plus
 - [ ] ground truth ambient occlusion
 - [x] directional light shadow mapping
-- [ ] spot light shadow mapping
+- [x] spot light shadow mapping
 - [ ] point light shadow mapping
-- [ ] variance shadow mapping
+- [x] variance shadow mapping
 - [ ] moment shadow mapping
 - [ ] reflective shadow mapping
 - [ ] exponential shadow mapping
@@ -27,11 +26,12 @@
 - [ ] sample distribution shadow mapping
 - [ ] screen space shadows
 - [ ] percentage closer soft shadows
+- [ ] paraboloid shadow mapping - point light
 - [x] basic compute
 - [x] compute triangle
 - [ ] auto exposure
 - [ ] temporal anti-aliasing
-- [ ] fast approximate anti-aliasing
+- [x] fast approximate anti-aliasing
 - [ ] volumetric cloud rendering
 - [x] parallax mapping
 - [x] normal mapping
@@ -41,6 +41,5 @@
 - [ ] order independent transparency
 - [ ] light propagation volume
 - [ ] visibility buffer
-- [ ] paraboloid shadow mapping - point light
 
 https://interplayoflight.wordpress.com/2013/04/29/parallax-corrected-cubemapping-with-any-cubemap/

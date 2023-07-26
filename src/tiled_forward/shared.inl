@@ -4,7 +4,7 @@
 
 #include "../common.inl"
 
-#define TILE_SIZE 32
+#define TILE_SIZE 16
 #define NUM_LIGHTS 1024
 
 struct CameraInfo {
@@ -26,30 +26,58 @@ DAXA_DECL_BUFFER_PTR(ObjectInfo)
 
 struct PointLight {
     f32vec3 position;
-    u32 kys;
     f32vec3 color;
-    u32 kys1;
     f32 radius;
-    u32 kys2;
-    u32 kys3;
-    u32 kys4;
 };
 
 DAXA_DECL_BUFFER_PTR(PointLight)
 
 struct PointLightIndex {
     u32 index;
-    u32 kys;
-    u32 kys1;
-    u32 kys2;
 };
 
 DAXA_DECL_BUFFER_PTR(PointLightIndex)
+
+struct PointLightGrid {
+    u32 count;
+};
+
+DAXA_DECL_BUFFER_PTR(PointLightGrid)
+
+struct Plane {
+    f32vec3 normal;
+    f32 dist; 
+};
+
+struct Frustum {
+    Plane planes[4];
+};
+
+DAXA_DECL_BUFFER_PTR(Frustum)
 
 struct DepthPrepassPush {
     daxa_BufferPtr(CameraInfo) camera_info;
     daxa_BufferPtr(ObjectInfo) object_info;
     daxa_BufferPtr(Vertex) vertices;
+};
+
+struct ComputeFrustumsPush {
+    daxa_BufferPtr(CameraInfo) camera_info;
+    daxa_BufferPtr(Frustum) frustum_buffer;
+    i32vec2 viewport_size;
+    i32vec2 tile_nums;
+};
+
+struct ComputeLightListPush {
+    daxa_ImageViewId depth_image;
+    daxa_SamplerId depth_sampler;
+    daxa_BufferPtr(CameraInfo) camera_info;
+    daxa_BufferPtr(Frustum) frustum_buffer;
+    daxa_BufferPtr(PointLight) point_light_buffer;
+    daxa_BufferPtr(PointLightIndex) point_light_index_buffer;
+    daxa_BufferPtr(PointLightGrid) point_light_grid_buffer;
+    i32vec2 viewport_size;
+    i32vec2 tile_nums;
 };
 
 struct CullingPush {
@@ -68,7 +96,8 @@ struct DrawPush {
     daxa_BufferPtr(Vertex) vertices;
     daxa_BufferPtr(Material) materials;
     daxa_BufferPtr(PointLight) point_light_buffer;
-    daxa_BufferPtr(PointLightIndex) visible_point_light_indices;
+    daxa_BufferPtr(PointLightIndex) point_light_index_buffer;
+    daxa_BufferPtr(PointLightGrid) point_light_grid_buffer;
     u32 material_index;
     i32vec2 tile_nums;
 };
