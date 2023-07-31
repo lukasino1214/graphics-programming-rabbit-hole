@@ -24,6 +24,6 @@ struct DrawPush {
     u32 material_index;
     daxa_BufferPtr(LightInfo) light_buffer;
     f32 bias;
-    int pcf_range;
-    float shadow_intensity;
+    i32 pcf_range;
+    f32 shadow_intensity;
 };

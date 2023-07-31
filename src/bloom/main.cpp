@@ -88,12 +88,12 @@ struct RenderTask {
                 daxa::RenderAttachmentInfo {
                     .image_view = uses.render_image.view(),
                     .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f},
+                    .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
                 }, 
                 daxa::RenderAttachmentInfo {
                     .image_view = uses.bloom_image.view(),
                     .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f},
+                    .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
                 }
             },
             .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
@@ -211,7 +211,7 @@ struct CompositionTask {
                 daxa::RenderAttachmentInfo {
                     .image_view = uses.render_target.view(),
                     .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f},
+                    .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
                 }, 
             },
             .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},

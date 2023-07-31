@@ -34,7 +34,7 @@ struct RenderShadowTask {
                 daxa::RenderAttachmentInfo {
                     .image_view = uses.shadow_target.view(),
                     .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f},
+                    .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 1.0f},
                 }
             },
             .depth_attachment = {{
@@ -142,7 +142,7 @@ struct RenderTask {
             .color_attachments = { daxa::RenderAttachmentInfo {
                 .image_view = uses.render_target.view(),
                 .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+                .clear_value = std::array<f32, 4>{0.2f, 0.4f, 1.0f, 1.0f},
             }},
             .depth_attachment = {{
                 .image_view = uses.depth_target.view(),
@@ -272,7 +272,7 @@ struct VarianceShadowApp : public App {
                 .enable_depth_write = true,
             },
             .raster = {
-                .face_culling = daxa::FaceCullFlagBits::FRONT_BIT,
+                .face_culling = daxa::FaceCullFlagBits::BACK_BIT,
             },
             .push_constant_size = sizeof(ShadowPush),
             .name = "shadow pipeline"
@@ -492,8 +492,6 @@ struct VarianceShadowApp : public App {
             delta_time = current_frame - last_frame;
             last_frame = current_frame;
 
-            camera.camera.set_pos(camera.pos);
-            camera.camera.set_rot(camera.rot.x, camera.rot.y);
             camera.update(delta_time);
 
             ImGui_ImplGlfw_NewFrame();
@@ -540,7 +538,7 @@ struct VarianceShadowApp : public App {
         }
     }
 
-    void on_key(int key, int action) override {
+    void on_key(i32 key, i32 action) override {
         if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
             toggle_pause();
         }

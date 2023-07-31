@@ -12,9 +12,9 @@ layout(location = 2) out f32vec3 out_normal;
 
 void main() {
     out_uv = deref(push.vertices[gl_VertexIndex]).uv;
-    out_position= f32vec3(deref(push.object_info).model_matrix * vec4(deref(push.vertices[gl_VertexIndex]).position, 1.0));
+    out_position= f32vec3(deref(push.object_info).model_matrix * f32vec4(deref(push.vertices[gl_VertexIndex]).position, 1.0));
     out_normal = f32mat3x3(deref(push.object_info).normal_matrix) * deref(push.vertices[gl_VertexIndex]).normal;
-    gl_Position = deref(push.camera_info).projection_matrix * deref(push.camera_info).view_matrix * deref(push.object_info).model_matrix * vec4(deref(push.vertices[gl_VertexIndex]).position, 1.0);
+    gl_Position = deref(push.camera_info).projection_matrix * deref(push.camera_info).view_matrix * deref(push.object_info).model_matrix * f32vec4(deref(push.vertices[gl_VertexIndex]).position, 1.0);
 }
 
 #elif DAXA_SHADER_STAGE == DAXA_SHADER_STAGE_FRAGMENT

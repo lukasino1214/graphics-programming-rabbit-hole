@@ -4,18 +4,18 @@ DAXA_DECL_PUSH_CONSTANT(CompositionPush, push)
 
 #if DAXA_SHADER_STAGE == DAXA_SHADER_STAGE_VERTEX
 
-layout(location = 0) out vec2 out_uv;
+layout(location = 0) out f32vec2 out_uv;
 
 void main() {
-    out_uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
-	gl_Position = vec4(out_uv * 2.0f - 1.0f, 0.0f, 1.0f);
+    out_uv = f32vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+	gl_Position = f32vec4(out_uv * 2.0f - 1.0f, 0.0f, 1.0f);
 }
 
 #elif DAXA_SHADER_STAGE == DAXA_SHADER_STAGE_FRAGMENT
 
-layout(location = 0) in vec2 in_uv;
+layout(location = 0) in f32vec2 in_uv;
 
-layout(location = 0) out vec4 color;
+layout(location = 0) out f32vec4 color;
 
 f32vec3 get_world_position_from_depth(f32vec2 uv, f32 depth) {
     f32vec4 clipSpacePosition = f32vec4(uv * 2.0 - 1.0, depth, 1.0);

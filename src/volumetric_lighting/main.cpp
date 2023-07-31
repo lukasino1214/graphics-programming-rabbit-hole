@@ -24,6 +24,7 @@ struct RenderShadowTask {
     RasterPipelineHolder* pipeline = {};
     Model* model = {};
     glm::mat4* light_matrix = {};
+    daxa::BufferId matrices_buffer = {};
 
     void callback(daxa::TaskInterface ti) {
         daxa::CommandList cmd_list = ti.get_command_list();
@@ -43,7 +44,8 @@ struct RenderShadowTask {
         for(auto& primitive : model->primitives) {
             cmd_list.push_constant(ShadowPush {
                 .mvp = *reinterpret_cast<f32mat4x4*>(&shadow_mvp),
-                .vertices = ti.get_device().get_device_address(model->vertex_buffer)
+                .vertices = ti.get_device().get_device_address(model->vertex_buffer),
+                .matrices = ti.get_device().get_device_address(matrices_buffer)
             });
 
             if(primitive.index_count > 0) {
@@ -69,19 +71,93 @@ struct RenderShadowTask {
     }
 };
 
-struct RenderTask {
+struct GBufferGatherTask {
+    struct Uses {
+        daxa::ImageColorAttachment<> albedo_target = {};
+        daxa::ImageColorAttachment<> normal_target = {};
+        daxa::ImageDepthAttachment<> depth_target = {};
+    } uses = {};
+
+    std::string_view name = "g buffer gather";
+    RasterPipelineHolder* pipeline = {};
+    Model* model = {};
+    ControlledCamera3D* camera = {};
+    daxa::BufferId matrices_buffer = {};
+
+    void callback(daxa::TaskInterface ti) {
+        daxa::CommandList cmd_list = ti.get_command_list();
+        u32 size_x = ti.get_device().info_image(uses.albedo_target.image()).size.x;
+        u32 size_y = ti.get_device().info_image(uses.albedo_target.image()).size.y;
+
+        cmd_list.begin_renderpass( daxa::RenderPassBeginInfo {
+            .color_attachments = { 
+                daxa::RenderAttachmentInfo {
+                    .image_view = uses.albedo_target.view(),
+                    .load_op = daxa::AttachmentLoadOp::CLEAR,
+                    .clear_value = std::array<f32, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+                },
+                daxa::RenderAttachmentInfo {
+                    .image_view = uses.normal_target.view(),
+                    .load_op = daxa::AttachmentLoadOp::CLEAR,
+                    .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 0.0f},
+                },
+            },
+            .depth_attachment = {{
+                .image_view = uses.depth_target.view(),
+                .load_op = daxa::AttachmentLoadOp::CLEAR,
+                .clear_value = daxa::DepthValue{1.0f, 0},
+            }},
+            .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
+        });
+        cmd_list.set_pipeline(*pipeline->pipeline);
+
+        for(auto& primitive : model->primitives) {
+            cmd_list.push_constant(GBufferGatherPush {
+                .matrices = ti.get_device().get_device_address(matrices_buffer),
+                .vertices = ti.get_device().get_device_address(model->vertex_buffer),
+                .materials = ti.get_device().get_device_address(model->material_buffer),
+                .material_index = primitive.material_index,
+            });
+
+            if(primitive.index_count > 0) {
+                cmd_list.set_index_buffer(model->index_buffer, 0);
+                cmd_list.draw_indexed({
+                    .index_count = primitive.index_count,
+                    .instance_count = 1,
+                    .first_index = primitive.first_index,
+                    .vertex_offset = static_cast<i32>(primitive.first_vertex),
+                    .first_instance = 0,
+                });
+            } else {
+                cmd_list.draw({
+                    .vertex_count = primitive.vertex_count,
+                    .instance_count = 1,
+                    .first_vertex = primitive.first_vertex,
+                    .first_instance = 0
+                });
+            }
+        }
+
+        cmd_list.end_renderpass();
+    }
+};
+
+struct CompositionTask {
     struct Uses {
         daxa::ImageColorAttachment<> render_target = {};
-        daxa::ImageDepthAttachment<> depth_target = {};
+        daxa::ImageShaderRead<> albedo_target = {};
+        daxa::ImageShaderRead<> normal_target = {};
+        daxa::ImageShaderRead<> depth_target = {};
         daxa::ImageShaderRead<> shadow_image = {};
     } uses = {};
 
     std::string_view name = "render";
     RasterPipelineHolder* pipeline = {};
     ControlledCamera3D* camera = {};
-    Model* model = {};
     daxa::BufferId light_buffer = {};
+    daxa::BufferId matrices_buffer = {};
     daxa::ImGuiRenderer imgui_renderer = {};
+    daxa::SamplerId sampler_id = {};
 
     f32* bias = {};
     i32* pcf_range = {};
@@ -98,47 +174,24 @@ struct RenderTask {
                 .load_op = daxa::AttachmentLoadOp::CLEAR,
                 .clear_value = std::array<f32, 4>{0.2f, 0.4f, 1.0f, 1.0f},
             }},
-            .depth_attachment = {{
-                .image_view = uses.depth_target.view(),
-                .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = daxa::DepthValue{1.0f, 0},
-            }},
             .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
         });
         cmd_list.set_pipeline(*pipeline->pipeline);
 
-        glm::mat4 mvp = camera->camera.get_vp() * glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 0.0f, 0.0f}) * glm::scale(glm::mat4{1.0f}, glm::vec3{0.01f, 0.01f, 0.01f});
+        cmd_list.push_constant(CompositionPush {
+            .albedo_image = uses.albedo_target.view(),
+            .normal_image = uses.normal_target.view(),
+            .depth_image = uses.depth_target.view(),
+            .sampler_id = sampler_id,
+            .matrices = ti.get_device().get_device_address(matrices_buffer),
+            .light_buffer = ti.get_device().get_device_address(light_buffer),
+            .bias = *bias,
+            .pcf_range = *pcf_range,
+            .shadow_intensity = *shadow_intensity,
+            .camera_position = *reinterpret_cast<f32vec3*>(&camera->position),
+        });
 
-        for(auto& primitive : model->primitives) {
-            cmd_list.push_constant(DrawPush {
-                .mvp = *reinterpret_cast<f32mat4x4*>(&mvp),
-                .vertices = ti.get_device().get_device_address(model->vertex_buffer),
-                .materials = ti.get_device().get_device_address(model->material_buffer),
-                .material_index = primitive.material_index,
-                .light_buffer = ti.get_device().get_device_address(light_buffer),
-                .bias = *bias,
-                .pcf_range = *pcf_range,
-                .shadow_intensity = *shadow_intensity
-            });
-
-            if(primitive.index_count > 0) {
-                cmd_list.set_index_buffer(model->index_buffer, 0);
-                cmd_list.draw_indexed({
-                    .index_count = primitive.index_count,
-                    .instance_count = 1,
-                    .first_index = primitive.first_index,
-                    .vertex_offset = static_cast<i32>(primitive.first_vertex),
-                    .first_instance = 0,
-                });
-            } else {
-                cmd_list.draw({
-                    .vertex_count = primitive.vertex_count,
-                    .instance_count = 1,
-                    .first_vertex = primitive.first_vertex,
-                    .first_instance = 0
-                });
-            }
-        }
+        cmd_list.draw({ .vertex_count = 3 });
 
         cmd_list.end_renderpass();
 
@@ -146,19 +199,27 @@ struct RenderTask {
     }
 };
 
-struct DirectionalShadowApp : public App {
+struct VolumetricLightingApp : public App {
     std::unique_ptr<Model> model = {};
-    RasterPipelineHolder raster_pipeline = {};
+    RasterPipelineHolder g_buffer_gather_pipeline = {};
+    RasterPipelineHolder composition_pipeline = {};
     RasterPipelineHolder shadow_pipeline = {};
 
     daxa::ImageId depth_image = {};
     daxa::TaskImage task_depth_image = {};
+    daxa::ImageId albedo_image = {};
+    daxa::TaskImage task_albedo_image = {};
+    daxa::ImageId normal_image = {};
+    daxa::TaskImage task_normal_image = {};
+
+    daxa::SamplerId sampler_id = {};
 
     daxa::ImageId shadow_image = {};
     daxa::TaskImage task_shadow_image = {};
 
     daxa::SamplerId shadow_sampler = {};
     daxa::BufferId light_buffer = {};
+    daxa::BufferId matrices_buffer = {};
 
     glm::mat4 light_matrix = {};
 
@@ -180,18 +241,18 @@ struct DirectionalShadowApp : public App {
     daxa::TaskImage task_swapchain_image = {};
     daxa::TaskGraph render_task_graph = {};
 
-    DirectionalShadowApp() : App("Directional shadow Example") {
-        raster_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+    VolumetricLightingApp() : App("Directional shadow Example") {
+        g_buffer_gather_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/directional_shadow/shader.glsl" }, },
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/volumetric_lighting/g_buffer_gather.glsl" }, },
             },
             .fragment_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/directional_shadow/shader.glsl" }, },
-                .compile_options = {
-                    .defines = { { .name = "USE_PCF", .value = "0" } }
-                } 
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/volumetric_lighting/g_buffer_gather.glsl" }, },
             },
-            .color_attachments = {{ .format = swapchain.get_format() }},
+            .color_attachments = {
+                { .format = swapchain.get_format() }, // albedo image
+                { .format = daxa::Format::R16G16B16A16_SFLOAT } // normal image
+            },
             .depth_test = {
                 .depth_attachment_format = daxa::Format::D32_SFLOAT,
                 .enable_depth_test = true,
@@ -200,16 +261,33 @@ struct DirectionalShadowApp : public App {
             .raster = {
                 .face_culling = daxa::FaceCullFlagBits::FRONT_BIT
             },
-            .push_constant_size = sizeof(DrawPush),
-            .name = "raster pipeline"
+            .push_constant_size = sizeof(GBufferGatherPush),
+            .name = "g buffer gather pipeline"
+        }).value();
+        
+        composition_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+            .vertex_shader_info = daxa::ShaderCompileInfo {
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/volumetric_lighting/composition.glsl" }, },
+            },
+            .fragment_shader_info = daxa::ShaderCompileInfo {
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/volumetric_lighting/composition.glsl" }, },
+                .compile_options = {
+                    .defines = { { .name = "USE_PCF", .value = "0" } }
+                } 
+            },
+            .raster = {
+                .face_culling = daxa::FaceCullFlagBits::NONE
+            },
+            .push_constant_size = sizeof(CompositionPush),
+            .name = "composition pipeline"
         }).value();
 
         shadow_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/directional_shadow/shadow.glsl" }, },
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/volumetric_lighting/shadow.glsl" }, },
             },
             .fragment_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/directional_shadow/shadow.glsl" }, },
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/volumetric_lighting/shadow.glsl" }, },
             },
             .depth_test = {
                 .depth_attachment_format = daxa::Format::D32_SFLOAT,
@@ -230,7 +308,7 @@ struct DirectionalShadowApp : public App {
         depth_image = device.create_image({
             .format = daxa::Format::D32_SFLOAT,
             .size = { size_x, size_y, 1 },
-            .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT,
+            .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             .name = "depth buffer"
         });
 
@@ -239,6 +317,47 @@ struct DirectionalShadowApp : public App {
             .swapchain_image = false,
             .name = "task depth image"
         }};
+
+        albedo_image = device.create_image({
+            .format = swapchain.get_format(),
+            .size = { size_x, size_y, 1 },
+            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
+        });
+
+        task_albedo_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&albedo_image, 1}},
+            .swapchain_image = false,
+            .name = "task albedo image"
+        }};
+
+        normal_image = device.create_image({
+            .format = daxa::Format::R16G16B16A16_SFLOAT,
+            .size = { size_x, size_y, 1 },
+            .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
+        });
+
+        task_normal_image = daxa::TaskImage { daxa::TaskImageInfo {
+            .initial_images = {.images = std::span{&normal_image, 1}},
+            .swapchain_image = false,
+            .name = "task normal image"
+        }};
+
+        sampler_id = device.create_sampler({
+            .magnification_filter = daxa::Filter::LINEAR,
+            .minification_filter = daxa::Filter::LINEAR,
+            .mipmap_filter = daxa::Filter::LINEAR,
+            .address_mode_u = daxa::SamplerAddressMode::CLAMP_TO_EDGE,
+            .address_mode_v = daxa::SamplerAddressMode::CLAMP_TO_EDGE,
+            .address_mode_w = daxa::SamplerAddressMode::CLAMP_TO_EDGE,
+            .mip_lod_bias = 0.0f,
+            .enable_anisotropy = true,
+            .max_anisotropy = 16.0f,
+            .enable_compare = false,
+            .compare_op = daxa::CompareOp::ALWAYS,
+            .min_lod = 0.0f,
+            .max_lod = 1.0f,
+            .enable_unnormalized_coordinates = false,
+        });
 
         shadow_image = device.create_image({
             .format = daxa::Format::D32_SFLOAT,
@@ -277,6 +396,12 @@ struct DirectionalShadowApp : public App {
             .name = "light buffer"
         });
 
+        matrices_buffer = device.create_buffer(daxa::BufferInfo {
+            .size = sizeof(MatricesBuffer),
+            .allocate_info = daxa::MemoryFlagBits::HOST_ACCESS_RANDOM,
+            .name = "matrices buffer"
+        });
+
         camera.camera.resize(size_x, size_y);
 
         model = std::make_unique<Model>(device, "assets/Sponza/glTF/Sponza.gltf");
@@ -298,7 +423,9 @@ struct DirectionalShadowApp : public App {
 
         render_task_graph.use_persistent_image(task_swapchain_image);
         render_task_graph.use_persistent_image(task_depth_image);
-        render_task_graph.use_persistent_image(task_shadow_image);;
+        render_task_graph.use_persistent_image(task_albedo_image);
+        render_task_graph.use_persistent_image(task_normal_image);
+        render_task_graph.use_persistent_image(task_shadow_image);
 
         render_task_graph.add_task(RenderShadowTask {
             .uses = {
@@ -306,20 +433,36 @@ struct DirectionalShadowApp : public App {
             },
             .pipeline = &shadow_pipeline,
             .model = model.get(),
-            .light_matrix = &light_matrix
+            .light_matrix = &light_matrix,
+            .matrices_buffer = matrices_buffer
         });
 
-        render_task_graph.add_task(RenderTask {
+        render_task_graph.add_task(GBufferGatherTask {
+            .uses = {
+                .albedo_target = task_albedo_image,
+                .normal_target = task_normal_image,
+                .depth_target = task_depth_image
+            },
+            .pipeline = &g_buffer_gather_pipeline,
+            .model = model.get(),
+            .camera = &camera,
+            .matrices_buffer = matrices_buffer
+        });
+
+        render_task_graph.add_task(CompositionTask {
             .uses = {
                 .render_target = task_swapchain_image,
+                .albedo_target = task_albedo_image,
+                .normal_target = task_normal_image,
                 .depth_target = task_depth_image,
                 .shadow_image = task_shadow_image
             },
-            .pipeline = &raster_pipeline,
+            .pipeline = &composition_pipeline,
             .camera = &camera,
-            .model = model.get(),
             .light_buffer = light_buffer,
+            .matrices_buffer = matrices_buffer,
             .imgui_renderer = imgui_renderer,
+            .sampler_id = sampler_id,
             .bias = &bias,
             .pcf_range = &pcf_range,
             .shadow_intensity = &shadow_intensity,
@@ -330,11 +473,15 @@ struct DirectionalShadowApp : public App {
         render_task_graph.complete({});
     }
 
-    ~DirectionalShadowApp() {
+    ~VolumetricLightingApp() {
         device.destroy_image(depth_image);
+        device.destroy_image(albedo_image);
+        device.destroy_image(normal_image);
+        device.destroy_sampler(sampler_id);
         device.destroy_image(shadow_image);
         device.destroy_sampler(shadow_sampler);
         device.destroy_buffer(light_buffer);
+        device.destroy_buffer(matrices_buffer);
     }
 
     void render() {
@@ -342,8 +489,8 @@ struct DirectionalShadowApp : public App {
         task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
         if(swapchain_image.is_empty()) { return; }
 
-        glm::vec3 light_position(-4.0f, 55.0f, -4.0f);
-        glm::mat4 light_projection = glm::ortho(-128.0f, 128.0f, -128.0f, 128.0f, -128.0f, 128.0f);
+        glm::vec3 light_position(-4.0f, 40.0f, -4.0f);
+        glm::mat4 light_projection = glm::ortho(-64.0f, 64.0f, -64.0f, 64.0f, -64.0f, 64.0f);
 
         glm::vec3 dir = { 0.0f, -1.0f, 0.0f };
         dir = glm::rotateX(dir, glm::radians(direction.x));
@@ -354,13 +501,31 @@ struct DirectionalShadowApp : public App {
 
         glm::mat4 model_mat = glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 0.0f, 0.0f}) * glm::scale(glm::mat4{1.0f}, glm::vec3{0.01f, 0.01f, 0.01f});
 
-        light_matrix = light_projection * light_view * model_mat;
+        light_matrix = light_projection * light_view;
 
         {
             auto* ptr = device.get_host_address_as<LightInfo>(light_buffer);
             ptr->light_matrix = *reinterpret_cast<f32mat4x4*>(&light_matrix);
             ptr->shadow_image = shadow_image.default_view();
             ptr->shadow_sampler = shadow_sampler;
+            ptr->light_direction = *reinterpret_cast<f32vec3*>(&dir);
+        }
+
+        {
+            glm::mat4 m = glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 0.0f, 0.0f}) * glm::scale(glm::mat4{1.0f}, glm::vec3{0.01f, 0.01f, 0.01f});
+            glm::mat4 normal_matrix = glm::transpose(glm::inverse(m));
+            glm::mat4 vp = camera.camera.get_vp();
+            glm::mat4 mvp = vp * m;
+
+            glm::mat4 temp_inverse_projection_mat = glm::inverse(camera.camera.proj_mat);
+            glm::mat4 temp_inverse_view_mat = glm::inverse(camera.camera.view_mat);
+
+            auto* ptr = device.get_host_address_as<MatricesBuffer>(matrices_buffer);
+            ptr->mvp = *reinterpret_cast<f32mat4x4*>(&mvp);
+            ptr->model_matrix = *reinterpret_cast<f32mat4x4*>(&m);
+            ptr->normal_matrix = *reinterpret_cast<f32mat4x4*>(&normal_matrix);
+            ptr->inverse_projection_matrix = *reinterpret_cast<f32mat4x4*>(&temp_inverse_projection_mat);
+            ptr->inverse_view_matrix = *reinterpret_cast<f32mat4x4*>(&temp_inverse_view_mat);
         }
 
         render_task_graph.execute({});
@@ -386,26 +551,21 @@ struct DirectionalShadowApp : public App {
                     pcf_mode.value = "1";
                 }
 
-                raster_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
+                composition_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
                     .vertex_shader_info = daxa::ShaderCompileInfo {
-                        .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/directional_shadow/shader.glsl" }, },
+                        .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/volumetric_lighting/composition.glsl" }, },
                     },
                     .fragment_shader_info = daxa::ShaderCompileInfo {
-                        .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/directional_shadow/shader.glsl" }, },
+                        .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/volumetric_lighting/composition.glsl" }, },
                         .compile_options = {
                             .defines = { pcf_mode }
                         } 
                     },
-                    .color_attachments = {{ .format = swapchain.get_format() }},
-                    .depth_test = {
-                        .depth_attachment_format = daxa::Format::D32_SFLOAT,
-                        .enable_depth_test = true,
-                        .enable_depth_write = true,
-                    },
                     .raster = {
-                        .face_culling = daxa::FaceCullFlagBits::FRONT_BIT
+                        .face_culling = daxa::FaceCullFlagBits::NONE
                     },
-                    .push_constant_size = sizeof(DrawPush),
+                    .push_constant_size = sizeof(CompositionPush),
+                    .name = "composition pipeline"
                 }).value();
             }
             ImGui::DragInt("pcf range", &pcf_range, 1.0f, 1.0f, 6.0f);
@@ -467,7 +627,7 @@ struct DirectionalShadowApp : public App {
 };
 
 auto main() -> i32 {
-    DirectionalShadowApp app;
+    VolumetricLightingApp app;
     app.update();
     return 0;
 }

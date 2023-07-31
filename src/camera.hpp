@@ -16,30 +16,11 @@ struct Camera3D {
     f32 fov = 90.0f, aspect = 1.0f;
     f32 near_clip = 0.1f, far_clip = 1000.0f;
     glm::mat4 proj_mat{};
-    glm::mat4 vtrn_mat{};
-    glm::mat4 vrot_mat{};
+    glm::mat4 view_mat{};
 
-    void resize(i32 size_x, i32 size_y) {
-        aspect = static_cast<f32>(size_x) / static_cast<f32>(size_y);
-        proj_mat = glm::perspective(glm::radians(fov), aspect, near_clip, far_clip);
-        proj_mat[1][1] *= -1.0f;
-    }
-
-    void set_pos(glm::vec3 pos) {
-        vtrn_mat = glm::translate(glm::mat4(1), glm::vec3(pos.x, pos.y, pos.z));
-    }
-
-    void set_rot(f32 x, f32 y) {
-        vrot_mat = glm::rotate(glm::rotate(glm::mat4(1), y, {1, 0, 0}), x, {0, 1, 0});
-    }
-
-    glm::mat4 get_vp() {
-        return proj_mat * vrot_mat * vtrn_mat;
-    }
-
-    glm::mat4 get_view() {
-        return vrot_mat * vtrn_mat;
-    }
+    void resize(i32 size_x, i32 size_y);
+    auto get_vp() -> glm::mat4;
+    auto get_view() -> glm::mat4;
 };
 
 namespace input {
@@ -61,15 +42,20 @@ namespace input {
         .toggle_pause = GLFW_KEY_RIGHT_ALT,
         .toggle_sprint = GLFW_KEY_LEFT_SHIFT,
     };
-} // namespace input
+}
 
 struct ControlledCamera3D {
     Camera3D camera{};
     input::Keybinds keybinds = input::DEFAULT_KEYBINDS;
-    glm::vec3 pos{0, 0, 0}, vel{}, rot{};
-    f32 speed = 30.0f, mouse_sens = 0.1f;
+    f32 mouse_sens = 0.1f;
     f32 sprint_speed = 8.0f;
-    f32 sin_rot_x = 0, cos_rot_x = 1;
+
+    glm::vec3 position{0.0f};
+    glm::vec3 rotation{0.0f};
+    glm::vec3 delta_position{ 0.0f };
+
+    f32 drag = 7.5f;
+    f32 acceleration = 10.0f;
 
     struct MoveFlags {
         uint8_t px : 1, py : 1, pz : 1, nx : 1, ny : 1, nz : 1, sprint : 1;

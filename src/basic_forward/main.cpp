@@ -7,6 +7,10 @@
 
 #include "shared.inl"
 
+#include <daxa/utils/imgui.hpp>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+
 struct UploadVertexTask {
     struct Uses {
         daxa::BufferTransferWrite vertex_buffer = {};
@@ -89,7 +93,9 @@ struct RenderTask {
 
     std::string_view name = "render";
     RasterPipelineHolder* pipeline = {};
+    daxa::ImGuiRenderer imgui_renderer = {};
     ControlledCamera3D* camera = {};
+    glm::vec3* cube_position = {};
 
     void callback(daxa::TaskInterface ti) {
         daxa::CommandList cmd_list = ti.get_command_list();
@@ -100,7 +106,7 @@ struct RenderTask {
             .color_attachments = { daxa::RenderAttachmentInfo {
                 .image_view = uses.render_target.view(),
                 .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+                .clear_value = std::array<f32, 4>{0.2f, 0.4f, 1.0f, 1.0f},
             }},
             .depth_attachment = {{
                 .image_view = uses.depth_image.view(),
@@ -111,7 +117,7 @@ struct RenderTask {
         });
         cmd_list.set_pipeline(*pipeline->pipeline);
 
-        glm::mat4 model = glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 0.0f, 0.0f});
+        glm::mat4 model = glm::translate(glm::mat4{1.0f}, *cube_position);
         glm::mat4 mvp = camera->camera.get_vp() * model;
 
         cmd_list.push_constant(DrawPush {
@@ -120,6 +126,8 @@ struct RenderTask {
         });
         cmd_list.draw({ .vertex_count = 36});
         cmd_list.end_renderpass();
+
+        imgui_renderer.record_commands(ImGui::GetDrawData(), cmd_list, uses.render_target.image(), size_x, size_y);
     }
 };
 
@@ -133,11 +141,14 @@ struct BasicForwardApp : public App {
     daxa::TaskGraph render_task_graph = {};
 
     ControlledCamera3D camera;
+    glm::vec3 cube_position = { 0.0, 0.0, 0.0 };
 
     f64 current_frame = glfwGetTime();
     f64 last_frame = current_frame;
     f64 delta_time;
     bool paused = false;
+
+    daxa::ImGuiRenderer imgui_renderer;
 
     BasicForwardApp() : App("Basic Forward Example") {
         vertex_buffer = device.create_buffer({
@@ -182,6 +193,13 @@ struct BasicForwardApp : public App {
             .name = "task buffer",
         });
 
+        ImGui::CreateContext();
+        ImGui_ImplGlfw_InitForVulkan(glfw_window_ptr, true);
+        imgui_renderer =  daxa::ImGuiRenderer({
+            .device = device,
+            .format = swapchain.get_format(),
+        });
+
         auto upload_task_graph = daxa::TaskGraph({
             .device = device,
             .name = "upload task graph",
@@ -218,7 +236,9 @@ struct BasicForwardApp : public App {
                 .depth_image = task_depth_image
             },
             .pipeline = &raster_pipeline,
-            .camera = &camera
+            .imgui_renderer = imgui_renderer,
+            .camera = &camera,
+            .cube_position = &cube_position
         });
 
         render_task_graph.submit({});
@@ -249,10 +269,15 @@ struct BasicForwardApp : public App {
             delta_time = current_frame - last_frame;
             last_frame = current_frame;
 
-            camera.camera.set_pos(camera.pos);
-            camera.camera.set_rot(camera.rot.x, camera.rot.y);
             camera.update(delta_time);
 
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+            ImGui::Begin("directional shadow settings");
+            ImGui::DragFloat3("cube position", &cube_position.x);
+            ImGui::End();
+
+            ImGui::Render();
 
             glfwPollEvents();
             render();
@@ -288,7 +313,7 @@ struct BasicForwardApp : public App {
         }
     }
 
-    void on_key(int key, int action) override {
+    void on_key(i32 key, i32 action) override {
         if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
             toggle_pause();
         }

@@ -106,7 +106,7 @@ struct RenderTask {
             .color_attachments = { daxa::RenderAttachmentInfo {
                 .image_view = uses.render_target.view(),
                 .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+                .clear_value = std::array<f32, 4>{0.2f, 0.4f, 1.0f, 1.0f},
             }},
             .depth_attachment = {{
                 .image_view = uses.depth_target.view(),
@@ -133,7 +133,7 @@ struct RenderTask {
                     .bias = *bias,
                     .pcf_range = *pcf_range,
                     .shadow_intensity = *shadow_intensity,
-                    .camera_position = *reinterpret_cast<f32vec3*>(&camera->pos)
+                    .camera_position = *reinterpret_cast<f32vec3*>(&camera->position)
                 });
 
                 if(primitive.index_count > 0) {
@@ -188,11 +188,12 @@ struct SpotShadowApp : public App {
     bool use_pcf = false;
     glm::vec3 position{0.0f, 10.0f, 0.0f};
     glm::vec3 direction = { 1.0f, 0.0f, 0.0f };
-    f32 inner_cut_off = 30.0f;
-    f32 outer_cut_off = 70.0f;
+    f32 inner_cut_off = 8.0f;
+    f32 outer_cut_off = 16.0f;
     f32 bias = 0.0001f;
     i32 pcf_range = 1;
     f32 shadow_intensity = 0.1f;
+    f32 light_intensity = 512.0f;
 
     daxa::ImGuiRenderer imgui_renderer;
 
@@ -236,7 +237,7 @@ struct SpotShadowApp : public App {
                 .enable_depth_write = true,
             },
             .raster = {
-                .face_culling = daxa::FaceCullFlagBits::FRONT_BIT,
+                .face_culling = daxa::FaceCullFlagBits::BACK_BIT,
                 .depth_bias_enable = true,
                 .depth_bias_constant_factor = 1.25f, 
                 .depth_bias_clamp = 0.0f,
@@ -425,8 +426,9 @@ struct SpotShadowApp : public App {
             ptr->shadow_sampler = shadow_sampler;
             ptr->position = *reinterpret_cast<f32vec3*>(&position);
             ptr->direction = *reinterpret_cast<f32vec3*>(&dir);
-            ptr->inner_cut_off = inner_cut_off;
-            ptr->outer_cut_off = outer_cut_off;
+            ptr->inner_cut_off = glm::cos(glm::radians(inner_cut_off));
+            ptr->outer_cut_off = glm::cos(glm::radians(outer_cut_off));
+            ptr->intensity = light_intensity;
         }
 
         render_task_graph.execute({});
@@ -438,8 +440,6 @@ struct SpotShadowApp : public App {
             delta_time = current_frame - last_frame;
             last_frame = current_frame;
 
-            camera.camera.set_pos(camera.pos);
-            camera.camera.set_rot(camera.rot.x, camera.rot.y);
             camera.update(delta_time);
 
             ImGui_ImplGlfw_NewFrame();
@@ -450,6 +450,7 @@ struct SpotShadowApp : public App {
             ImGui::DragFloat3("direction", &direction.x);
             ImGui::DragFloat("inner cut off", &inner_cut_off);
             ImGui::DragFloat("outer cut off", &outer_cut_off);
+            ImGui::DragFloat("light intensity", &light_intensity);
             ImGui::DragFloat("bias", &bias, 0.0001f, 0.0000001f, 0.1f);
             if(ImGui::Checkbox("use pcf", &use_pcf)) {
                 daxa::ShaderDefine pcf_mode = { .name = "USE_PCF", .value = "0" };
@@ -519,7 +520,7 @@ struct SpotShadowApp : public App {
         }
     }
 
-    void on_key(int key, int action) override {
+    void on_key(i32 key, i32 action) override {
         if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
             toggle_pause();
         }

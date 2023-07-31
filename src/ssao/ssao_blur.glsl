@@ -21,15 +21,15 @@ layout(location = 0) out f32 out_ssao;
 #define BSIGMA 0.1
 #define MSIZE 15
 
-float normpdf(in float x, in float sigma) {
+f32 normpdf(in f32 x, in f32 sigma) {
 	return 0.39894*exp(-0.5*x*x/(sigma*sigma))/sigma;
 }
 
-float normpdf3(in vec3 v, in float sigma) {
+f32 normpdf3(in f32vec3 v, in f32 sigma) {
 	return 0.39894*exp(-0.5*dot(v,v)/(sigma*sigma))/sigma;
 }
 
-float linearize_depth(float d,float zNear,float zFar) {
+f32 linearize_depth(f32 d,f32 zNear,f32 zFar) {
     return zNear * zFar / (zFar + d * (zNear - zFar));
 }
 
@@ -48,32 +48,32 @@ void main() {
 	}
 	out_ssao = result / f32(n);
 #elif BLUR_MODE == 1
-	float d = linearize_depth(texture(daxa_sampler2D(push.ssao, push.sampler_id), in_uv).r, 0.1, 1000.0);
+	f32 d = linearize_depth(texture(daxa_sampler2D(push.ssao, push.sampler_id), in_uv).r, 0.1, 1000.0);
 
 	//declare stuff
-	const int kSize = (MSIZE-1)/2;
-	float kernel[MSIZE];
-	float final_colour = 0.0;
+	const i32 kSize = (MSIZE-1)/2;
+	f32 kernel[MSIZE];
+	f32 final_colour = 0.0;
 	
 	//create the 1-D kernel
-	float Z = 0.0;
-	for (int j = 0; j <= kSize; ++j) {
-		kernel[kSize+j] = kernel[kSize-j] = normpdf(float(j), SIGMA);
+	f32 Z = 0.0;
+	for (i32 j = 0; j <= kSize; ++j) {
+		kernel[kSize+j] = kernel[kSize-j] = normpdf(f32(j), SIGMA);
 	}
 	
-	float cc;
-	float dd;
-	float factor;
-	float bZ = 1.0/normpdf(0.0, BSIGMA);
-	const vec2 texelSize = 1.0 / vec2(textureSize(daxa_sampler2D(push.ssao, push.sampler_id), 0));
+	f32 cc;
+	f32 dd;
+	f32 factor;
+	f32 bZ = 1.0/normpdf(0.0, BSIGMA);
+	const f32vec2 texelSize = 1.0 / f32vec2(textureSize(daxa_sampler2D(push.ssao, push.sampler_id), 0));
 	//read out the texels
-	for (int i=-kSize; i <= kSize; ++i)
+	for (i32 i=-kSize; i <= kSize; ++i)
 	{
-		for (int j=-kSize; j <= kSize; ++j)
+		for (i32 j=-kSize; j <= kSize; ++j)
 		{
-			cc = texture(daxa_sampler2D(push.ssao, push.sampler_id), in_uv + texelSize * vec2(float(i),float(j))).r;
-			dd = linearize_depth(texture(daxa_sampler2D(push.ssao, push.sampler_id), in_uv + texelSize * vec2(float(i),float(j))).r, 0.1, 1000.0);
-			float diff = abs(dd-d);
+			cc = texture(daxa_sampler2D(push.ssao, push.sampler_id), in_uv + texelSize * f32vec2(f32(i),f32(j))).r;
+			dd = linearize_depth(texture(daxa_sampler2D(push.ssao, push.sampler_id), in_uv + texelSize * f32vec2(f32(i),f32(j))).r, 0.1, 1000.0);
+			f32 diff = abs(dd-d);
 			factor = normpdf(pow(diff, 0.35), BSIGMA)*bZ*kernel[kSize+i];
 			Z += factor;
 			final_colour += factor*cc;

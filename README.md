@@ -19,7 +19,7 @@
 - [ ] point light shadow mapping
 - [x] variance shadow mapping
 - [ ] moment shadow mapping
-- [ ] reflective shadow mapping
+- [x] reflective shadow mapping
 - [ ] exponential shadow mapping
 - [ ] cascaded shadow mapping
 - [ ] parallel-split shadow mapping
@@ -33,6 +33,7 @@
 - [ ] temporal anti-aliasing
 - [x] fast approximate anti-aliasing
 - [ ] volumetric cloud rendering
+- [x] volumetric lighting
 - [x] parallax mapping
 - [x] normal mapping
 - [ ] voxel cone traced global illumination

@@ -13,17 +13,17 @@ layout (location = 3) out f32vec3 out_tangent_frag_position;
 
 void main() {
     out_uv = deref(push.vertices[gl_VertexIndex]).uv;
-    out_tangent_frag_position = vec3(deref(push.object_info).model_matrix * vec4(deref(push.vertices[gl_VertexIndex]).position, 1.0));   
+    out_tangent_frag_position = f32vec3(deref(push.object_info).model_matrix * f32vec4(deref(push.vertices[gl_VertexIndex]).position, 1.0));   
     
-    gl_Position = deref(push.camera_info).projection_matrix * deref(push.camera_info).view_matrix * deref(push.object_info).model_matrix * vec4(deref(push.vertices[gl_VertexIndex]).position, 1.0);
+    gl_Position = deref(push.camera_info).projection_matrix * deref(push.camera_info).view_matrix * deref(push.object_info).model_matrix * f32vec4(deref(push.vertices[gl_VertexIndex]).position, 1.0);
     
-    vec3 N = normalize(mat3(deref(push.object_info).normal_matrix) * deref(push.vertices[gl_VertexIndex]).normal);
-	vec3 T = normalize(mat3(deref(push.object_info).normal_matrix) * deref(push.vertices[gl_VertexIndex]).tangent.xyz);
-	vec3 B = normalize(cross(N, T));
+    f32vec3 N = normalize(mat3(deref(push.object_info).normal_matrix) * deref(push.vertices[gl_VertexIndex]).normal);
+	f32vec3 T = normalize(mat3(deref(push.object_info).normal_matrix) * deref(push.vertices[gl_VertexIndex]).tangent.xyz);
+	f32vec3 B = normalize(cross(N, T));
 	mat3 TBN = transpose(mat3(T, B, N));
 
 	out_tangent_light_position = TBN * push.light_position;
-	out_tangent_camera_position  = TBN * deref(push.camera_info).position * -1.0;
+	out_tangent_camera_position  = TBN * deref(push.camera_info).position;
 	out_tangent_frag_position  = TBN * out_tangent_frag_position;
 }
 
@@ -48,7 +48,7 @@ f32vec2 steep_parallax_mapping(f32vec2 uv, f32vec3 view_direction) {
 	f32vec2 delta_uv = view_direction.xy * push.height_scale / (view_direction.z * push.layers);
 	f32vec2 current_uv = uv;
 	f32 height = 1.0 - sample_texture(push.heightmap_texture, current_uv).r;
-	for (int i = 0; i < push.layers; i++) {
+	for (i32 i = 0; i < push.layers; i++) {
 		current_layer_depth += layer_depth;
 		current_uv -= delta_uv;
 		height = 1.0 - sample_texture(push.heightmap_texture, current_uv).r;
@@ -63,7 +63,7 @@ f32vec2 parallax_occlusion_mapping(f32vec2 uv, f32vec3 view_direction) {
 	f32vec2 delta_uv = view_direction.xy * push.height_scale / (view_direction.z * push.layers);
 	f32vec2 current_uv = uv;
 	f32 height = 1.0 - sample_texture(push.heightmap_texture, current_uv).r;
-	for (int i = 0; i < push.layers; i++) {
+	for (i32 i = 0; i < push.layers; i++) {
 		current_layer_depth += layer_depth;
 		current_uv -= delta_uv;
 		height = 1.0 - sample_texture(push.heightmap_texture, current_uv).r;
@@ -81,7 +81,7 @@ f32vec2 relief_parallax_mapping(f32vec2 uv, f32vec3 view_direction) {
 	f32vec2 delta_uv = view_direction.xy * push.height_scale / (view_direction.z * push.layers);
 	f32vec2 current_uv = uv;
 	f32 height = 1.0 - sample_texture(push.heightmap_texture, current_uv).r;
-	for (int i = 0; i < push.layers; i++) {
+	for (i32 i = 0; i < push.layers; i++) {
 		current_layer_depth += layer_depth;
 		current_uv -= delta_uv;
 		height = 1.0 - sample_texture(push.heightmap_texture, current_uv).r;
@@ -93,7 +93,7 @@ f32vec2 relief_parallax_mapping(f32vec2 uv, f32vec3 view_direction) {
 		}
 	}
 
-    for (int i = 0; i < push.layers * 0.5; i++) {
+    for (i32 i = 0; i < push.layers * 0.5; i++) {
         delta_uv *= 0.5;
         layer_depth *= 0.5;
 		height = 1.0 - sample_texture(push.heightmap_texture, current_uv).r;
@@ -116,7 +116,7 @@ f32vec2 contact_refinement_parallax_mapping(f32vec2 uv, f32vec3 view_direction) 
 	f32vec2 delta_uv = view_direction.xy * push.height_scale / (view_direction.z * push.layers);
 	f32vec2 current_uv = uv;
 	f32 height = 1.0 - sample_texture(push.heightmap_texture, current_uv).r;
-	for (int i = 0; i < push.layers; i++) {
+	for (i32 i = 0; i < push.layers; i++) {
 		current_layer_depth += layer_depth;
 		current_uv -= delta_uv;
 		height = 1.0 - sample_texture(push.heightmap_texture, current_uv).r;
@@ -128,9 +128,9 @@ f32vec2 contact_refinement_parallax_mapping(f32vec2 uv, f32vec3 view_direction) 
 		}
 	}
 
-    for (int i = 2; i < push.layers * 0.5 + 2.0; i++) {
-        delta_uv /= float(i);
-        layer_depth /= float(i);
+    for (i32 i = 2; i < push.layers * 0.5 + 2.0; i++) {
+        delta_uv /= f32(i);
+        layer_depth /= f32(i);
 		height = 1.0 - sample_texture(push.heightmap_texture, current_uv).r;
 
 		if (height > current_layer_depth) {

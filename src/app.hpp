@@ -138,8 +138,8 @@ struct App {
 
     virtual void on_mouse_move(f32 x, f32 y) {}
     virtual void on_mouse_scroll(f32 x, f32 y) {}
-    virtual void on_mouse_button(int key, int action) {}
-    virtual void on_key(int key, int action) {}
+    virtual void on_mouse_button(i32 key, i32 action) {}
+    virtual void on_key(i32 key, i32 action) {}
 
     GLFWwindow* glfw_window_ptr = {};
     u32 size_x = 800, size_y = 600;

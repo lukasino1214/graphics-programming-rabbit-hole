@@ -32,9 +32,9 @@ struct GeneratePointLightsTask {
 
         auto random_position = [&](std::uniform_real_distribution<> dis, std::mt19937 gen) -> f32vec3 {
             f32vec3 position;
-            for (int i = 0; i < 3; i++) {
-                float min = LIGHT_MIN_BOUNDS[i];
-                float max = LIGHT_MAX_BOUNDS[i];
+            for (i32 i = 0; i < 3; i++) {
+                f32 min = LIGHT_MIN_BOUNDS[i];
+                f32 max = LIGHT_MAX_BOUNDS[i];
                 position[i] = (GLfloat)dis(gen) * (max - min) + min;
             }
 
@@ -44,10 +44,10 @@ struct GeneratePointLightsTask {
         std::vector<PointLight> point_lights = {};
         point_lights.resize(NUM_LIGHTS);
 
-        for (int i = 0; i < NUM_LIGHTS; i++) {
+        for (i32 i = 0; i < NUM_LIGHTS; i++) {
             PointLight &light = point_lights[i];        
             light.position = random_position(dis, gen);
-            light.color = f32vec3{static_cast<float>(dis(gen)), static_cast<float>(dis(gen)), static_cast<float>(dis(gen))};
+            light.color = f32vec3{static_cast<f32>(dis(gen)), static_cast<f32>(dis(gen)), static_cast<f32>(dis(gen))};
             light.radius = 8.0f;
             // light.position = { 0.0f,0.0f, 0.0f };
             // light.color = { 1.0f, 0.0f, 0.0f };
@@ -101,7 +101,7 @@ struct UpdateBuffersTask {
         camera_ptr->inverse_projection_matrix = *reinterpret_cast<f32mat4x4*>(&temp_inverse_projection_mat);
         camera_ptr->view_matrix = *reinterpret_cast<f32mat4x4*>(&view);
         camera_ptr->inverse_view_matrix = *reinterpret_cast<f32mat4x4*>(&temp_inverse_view_mat);
-        camera_ptr->position = *reinterpret_cast<f32vec3*>(&camera->pos);
+        camera_ptr->position = *reinterpret_cast<f32vec3*>(&camera->position);
 
         glm::mat4 model_matrix = glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 0.0f, 0.0f}) * glm::scale(glm::mat4{1.0f}, glm::vec3{0.1f, 0.1f, 0.1f});
         glm::mat4 normal_matrix = glm::transpose(glm::inverse(model_matrix));
@@ -137,7 +137,7 @@ struct ComputeFrustumsTask {
             .viewport_size = { static_cast<i32>(*size_x), static_cast<i32>(*size_y) },
             .tile_nums = { static_cast<i32>(*work_groups_x), static_cast<i32>(*work_groups_y) }
         });
-        cmd_list.dispatch(std::ceil(static_cast<float>(*work_groups_x) / static_cast<float>(TILE_SIZE)), std::ceil(static_cast<float>(*work_groups_y) / static_cast<float>(TILE_SIZE)));
+        cmd_list.dispatch(std::ceil(static_cast<f32>(*work_groups_x) / static_cast<f32>(TILE_SIZE)), std::ceil(static_cast<f32>(*work_groups_y) / static_cast<f32>(TILE_SIZE)));
     }
 };
 
@@ -265,7 +265,7 @@ struct RenderTask {
             .color_attachments = { daxa::RenderAttachmentInfo {
                 .image_view = uses.render_target.view(),
                 .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+                .clear_value = std::array<f32, 4>{0.2f, 0.4f, 1.0f, 1.0f},
             }},
             .depth_attachment = {{
                 .image_view = uses.depth_target.view(),
@@ -480,8 +480,8 @@ struct TiledForwardApp : public App {
 
         // work_groups_x = (size_x - 1) / TILE_SIZE + 1;
         // work_groups_y = (size_y - 1) / TILE_SIZE + 1;
-        work_groups_x = std::ceil(static_cast<float>(size_x) / static_cast<float>(TILE_SIZE));
-        work_groups_y = std::ceil(static_cast<float>(size_y) / static_cast<float>(TILE_SIZE));
+        work_groups_x = std::ceil(static_cast<f32>(size_x) / static_cast<f32>(TILE_SIZE));
+        work_groups_y = std::ceil(static_cast<f32>(size_y) / static_cast<f32>(TILE_SIZE));
         number_of_tiles = work_groups_x * work_groups_y;
 
         frustums_buffer = device.create_buffer(daxa::BufferInfo {
@@ -666,8 +666,6 @@ struct TiledForwardApp : public App {
             delta_time = current_frame - last_frame;
             last_frame = current_frame;
 
-            camera.camera.set_pos(camera.pos);
-            camera.camera.set_rot(camera.rot.x, camera.rot.y);
             camera.update(delta_time);
 
             ImGui_ImplGlfw_NewFrame();
@@ -793,7 +791,7 @@ struct TiledForwardApp : public App {
         }
     }
 
-    void on_key(int key, int action) override {
+    void on_key(i32 key, i32 action) override {
         if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
             toggle_pause();
         }

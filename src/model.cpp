@@ -81,7 +81,7 @@ Model::Model(daxa::Device _device, const std::string_view& file_path) : device{_
             [&](fastgltf::sources::Vector& vector) {
                 i32 width = 0, height = 0, nrChannels = 0;
                 unsigned char *data = nullptr;
-                data = stbi_load_from_memory(vector.bytes.data(), static_cast<int>(vector.bytes.size()), &width, &height, &nrChannels, 0);
+                data = stbi_load_from_memory(vector.bytes.data(), static_cast<i32>(vector.bytes.size()), &width, &height, &nrChannels, 0);
                 if(!data) {
                     throw std::runtime_error("wtf");
                 }
@@ -121,9 +121,9 @@ Model::Model(daxa::Device _device, const std::string_view& file_path) : device{_
                 std::visit(fastgltf::visitor {
                     [](auto& arg) {},
                     [&](fastgltf::sources::Vector& vector) {
-                        int width = 0, height = 0, nrChannels = 0;
+                        i32 width = 0, height = 0, nrChannels = 0;
                         unsigned char *data = nullptr;
-                        data = stbi_load_from_memory(vector.bytes.data(), static_cast<int>(vector.bytes.size()), &width, &height, &nrChannels, 0);
+                        data = stbi_load_from_memory(vector.bytes.data(), static_cast<i32>(vector.bytes.size()), &width, &height, &nrChannels, 0);
                         if(!data) {
                             throw std::runtime_error("wtf");
                         }
@@ -298,26 +298,26 @@ Model::Model(daxa::Device _device, const std::string_view& file_path) : device{_
                 if (primitive.attributes.find("POSITION") != primitive.attributes.end()) {
                     auto& accessor = asset->accessors[primitive.attributes.find("POSITION")->second];
                     auto& view = asset->bufferViews[accessor.bufferViewIndex.value()];
-                    positionBuffer = reinterpret_cast<const float*>(&(std::get<fastgltf::sources::Vector>(asset->buffers[view.bufferIndex].data).bytes[accessor.byteOffset + view.byteOffset]));
+                    positionBuffer = reinterpret_cast<const f32*>(&(std::get<fastgltf::sources::Vector>(asset->buffers[view.bufferIndex].data).bytes[accessor.byteOffset + view.byteOffset]));
                     vertex_count = accessor.count;
                 }
 
                 if (primitive.attributes.find("NORMAL") != primitive.attributes.end()) {
                     auto& accessor = asset->accessors[primitive.attributes.find("NORMAL")->second];
                     auto& view = asset->bufferViews[accessor.bufferViewIndex.value()];
-                    normalBuffer = reinterpret_cast<const float*>(&(std::get<fastgltf::sources::Vector>(asset->buffers[view.bufferIndex].data).bytes[accessor.byteOffset + view.byteOffset]));
+                    normalBuffer = reinterpret_cast<const f32*>(&(std::get<fastgltf::sources::Vector>(asset->buffers[view.bufferIndex].data).bytes[accessor.byteOffset + view.byteOffset]));
                 }
 
                 if (primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end()) {
                     auto& accessor = asset->accessors[primitive.attributes.find("TEXCOORD_0")->second];
                     auto& view = asset->bufferViews[accessor.bufferViewIndex.value()];
-                    texCoordsBuffer = reinterpret_cast<const float*>(&(std::get<fastgltf::sources::Vector>(asset->buffers[view.bufferIndex].data).bytes[accessor.byteOffset + view.byteOffset]));
+                    texCoordsBuffer = reinterpret_cast<const f32*>(&(std::get<fastgltf::sources::Vector>(asset->buffers[view.bufferIndex].data).bytes[accessor.byteOffset + view.byteOffset]));
                 }
 
                 if (primitive.attributes.find("TANGENT") != primitive.attributes.end()) {
                     auto& accessor = asset->accessors[primitive.attributes.find("TANGENT")->second];
                     auto& view = asset->bufferViews[accessor.bufferViewIndex.value()];
-                    tangentsBuffer = reinterpret_cast<const float*>(&(std::get<fastgltf::sources::Vector>(asset->buffers[view.bufferIndex].data).bytes[accessor.byteOffset + view.byteOffset]));
+                    tangentsBuffer = reinterpret_cast<const f32*>(&(std::get<fastgltf::sources::Vector>(asset->buffers[view.bufferIndex].data).bytes[accessor.byteOffset + view.byteOffset]));
                 }
 
                 for (size_t v = 0; v < vertex_count; v++) {

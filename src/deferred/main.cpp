@@ -31,12 +31,12 @@ struct GBufferGatherTask {
                 daxa::RenderAttachmentInfo {
                     .image_view = uses.albedo_target.view(),
                     .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+                    .clear_value = std::array<f32, 4>{0.2f, 0.4f, 1.0f, 1.0f},
                 },
                 daxa::RenderAttachmentInfo {
                     .image_view = uses.normal_target.view(),
                     .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f},
+                    .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 0.0f},
                 },
             },
             .depth_attachment = {{
@@ -103,7 +103,7 @@ struct CompositionTask {
             .color_attachments = { daxa::RenderAttachmentInfo {
                 .image_view = uses.render_target.view(),
                 .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f},
+                .clear_value = std::array<f32, 4>{0.0f, 0.0f, 0.0f, 0.0f},
             }},
             .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
         });
@@ -300,10 +300,7 @@ struct DeferredApp : public App {
             delta_time = current_frame - last_frame;
             last_frame = current_frame;
 
-            camera.camera.set_pos(camera.pos);
-            camera.camera.set_rot(camera.rot.x, camera.rot.y);
             camera.update(delta_time);
-
 
             glfwPollEvents();
             render();
@@ -356,7 +353,7 @@ struct DeferredApp : public App {
         }
     }
 
-    void on_key(int key, int action) override {
+    void on_key(i32 key, i32 action) override {
         if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
             toggle_pause();
         }

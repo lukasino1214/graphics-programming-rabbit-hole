@@ -42,3 +42,6 @@ make_example(tiled_forward)
 make_example(spot_shadow)
 make_example(variance_shadow)
 make_example(fxaa)
+make_example(reflective_shadow_mapping)
+make_example(volumetric_lighting)
+

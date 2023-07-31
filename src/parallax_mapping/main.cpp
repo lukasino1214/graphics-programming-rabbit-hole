@@ -42,7 +42,7 @@ struct RenderTask {
             .color_attachments = { daxa::RenderAttachmentInfo {
                 .image_view = uses.render_target.view(),
                 .load_op = daxa::AttachmentLoadOp::CLEAR,
-                .clear_value = std::array<float, 4>{0.2f, 0.4f, 1.0f, 1.0f},
+                .clear_value = std::array<f32, 4>{0.2f, 0.4f, 1.0f, 1.0f},
             }},
             .depth_attachment = {{
                 .image_view = uses.depth_target.view(),
@@ -258,7 +258,7 @@ struct ParallaxMappingApp : public App {
         camera_ptr->inverse_projection_matrix = *reinterpret_cast<f32mat4x4*>(&temp_inverse_projection_mat);
         camera_ptr->view_matrix = *reinterpret_cast<f32mat4x4*>(&view);
         camera_ptr->inverse_view_matrix = *reinterpret_cast<f32mat4x4*>(&temp_inverse_view_mat);
-        camera_ptr->position = *reinterpret_cast<f32vec3*>(&camera.pos);
+        camera_ptr->position = *reinterpret_cast<f32vec3*>(&camera.position);
 
         glm::mat4 model_matrix = glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 0.0f, 0.0f}) * glm::scale(glm::mat4{1.0f}, glm::vec3{1.0f, 1.0f, 1.0f}) * glm::rotate(glm::mat4{1.0}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
         glm::mat4 normal_matrix = glm::transpose(glm::inverse(model_matrix));
@@ -276,8 +276,6 @@ struct ParallaxMappingApp : public App {
             delta_time = current_frame - last_frame;
             last_frame = current_frame;
 
-            camera.camera.set_pos(camera.pos);
-            camera.camera.set_rot(camera.rot.x, camera.rot.y);
             camera.update(delta_time);
 
             ImGui_ImplGlfw_NewFrame();
@@ -368,7 +366,7 @@ struct ParallaxMappingApp : public App {
         }
     }
 
-    void on_key(int key, int action) override {
+    void on_key(i32 key, i32 action) override {
         if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
             toggle_pause();
         }

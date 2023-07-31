@@ -35,11 +35,11 @@ const f32vec3 kernelSamples[KERNEL_SIZE] = { // HIGH (26 samples)
 
 #if DAXA_SHADER_STAGE == DAXA_SHADER_STAGE_VERTEX
 
-layout(location = 0) out vec2 out_uv;
+layout(location = 0) out f32vec2 out_uv;
 
 void main() {
-    out_uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
-	gl_Position = vec4(out_uv * 2.0f - 1.0f, 0.0f, 1.0f);
+    out_uv = f32vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+	gl_Position = f32vec4(out_uv * 2.0f - 1.0f, 0.0f, 1.0f);
 }
 
 #elif DAXA_SHADER_STAGE == DAXA_SHADER_STAGE_FRAGMENT
@@ -120,11 +120,11 @@ void main() {
         0.0
     ));
 #else
-	const float texel_size_noise = 1.0 / 128.0;
-	float noise_primary = sample_texture(push.noise_texture, (in_uv * f32vec2(tex_dim)) * texel_size_noise).r;
-	float noise_secondary = sample_texture(push.noise_texture, (in_uv * f32vec2(tex_dim)) * texel_size_noise - 3.25124895912).r;
+	const f32 texel_size_noise = 1.0 / 128.0;
+	f32 noise_primary = sample_texture(push.noise_texture, (in_uv * f32vec2(tex_dim)) * texel_size_noise).r;
+	f32 noise_secondary = sample_texture(push.noise_texture, (in_uv * f32vec2(tex_dim)) * texel_size_noise - 3.25124895912).r;
 	f32vec3 random_vec = normalize(f32vec3(
-        in_uv + vec2(noise_primary, noise_secondary),
+        in_uv + f32vec2(noise_primary, noise_secondary),
         0.0
     ));
 #endif

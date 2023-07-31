@@ -30,9 +30,9 @@ Plane compute_plane(f32vec3 p0, f32vec3 p1, f32vec3 p2) {
     return plane;
 }
 
-const vec2 ndc_upper_left = vec2(-1.0, -1.0);
-const float ndc_near_plane = 0.0;
-const float ndc_far_plane = 1.0;
+const f32vec2 ndc_upper_left = f32vec2(-1.0, -1.0);
+const f32 ndc_near_plane = 0.0;
+const f32 ndc_far_plane = 1.0;
 
 
 void main() {
