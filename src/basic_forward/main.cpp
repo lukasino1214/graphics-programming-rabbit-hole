@@ -273,7 +273,7 @@ struct BasicForwardApp : public App {
 
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
-            ImGui::Begin("directional shadow settings");
+            ImGui::Begin("basic forward settings");
             ImGui::DragFloat3("cube position", &cube_position.x);
             ImGui::End();
 

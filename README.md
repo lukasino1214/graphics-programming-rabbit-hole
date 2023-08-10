@@ -20,12 +20,13 @@
 - [x] variance shadow mapping
 - [ ] moment shadow mapping
 - [x] reflective shadow mapping
-- [ ] exponential shadow mapping
+- [x] exponential shadow mapping
+- [x] exponential variance shadow mapping
 - [ ] cascaded shadow mapping
 - [ ] parallel-split shadow mapping
 - [ ] sample distribution shadow mapping
 - [ ] screen space shadows
-- [ ] percentage closer soft shadows
+- [x] percentage closer soft shadows
 - [ ] paraboloid shadow mapping - point light
 - [x] basic compute
 - [x] compute triangle
@@ -42,5 +43,16 @@
 - [ ] order independent transparency
 - [ ] light propagation volume
 - [ ] visibility buffer
+- [ ] particles
+- [ ] water rendering
+- [ ] animation
+- [ ] physically based rendering
 
 https://interplayoflight.wordpress.com/2013/04/29/parallax-corrected-cubemapping-with-any-cubemap/
+
+## My TODO
+
+add ligthing to forward and deffered
+actually implement contact refinement parallax mapping
+use the old trick for ortographic projection shadows to avoid flickering
+fix pcss ???

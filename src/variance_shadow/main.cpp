@@ -234,7 +234,7 @@ struct VarianceShadowApp : public App {
     daxa::TaskImage task_swapchain_image = {};
     daxa::TaskGraph render_task_graph = {};
 
-    VarianceShadowApp() : App("Directional shadow Example") {
+    VarianceShadowApp() : App("Variance shadow Example") {
         raster_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/variance_shadow/shader.glsl" }, },
@@ -358,8 +358,8 @@ struct VarianceShadowApp : public App {
             .mip_lod_bias = 0.0f,
             .enable_anisotropy = true,
             .max_anisotropy = 16.0f,
-            .enable_compare = true,
-            .compare_op = daxa::CompareOp::LESS,
+            .enable_compare = false,
+            .compare_op = daxa::CompareOp::ALWAYS,
             .min_lod = 0.0f,
             .max_lod = 1.0f,
             .border_color = daxa::BorderColor::FLOAT_OPAQUE_WHITE,
@@ -497,7 +497,7 @@ struct VarianceShadowApp : public App {
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
 
-            ImGui::Begin("directional shadow settings");
+            ImGui::Begin("variance shadow settings");
             ImGui::DragFloat3("direction", &direction.x);
             ImGui::DragFloat("shadow intensity", &shadow_intensity, 0.05f, 0.0001f, 1.0f);
             ImGui::End();

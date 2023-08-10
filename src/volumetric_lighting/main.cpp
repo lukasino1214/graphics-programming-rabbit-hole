@@ -241,7 +241,7 @@ struct VolumetricLightingApp : public App {
     daxa::TaskImage task_swapchain_image = {};
     daxa::TaskGraph render_task_graph = {};
 
-    VolumetricLightingApp() : App("Directional shadow Example") {
+    VolumetricLightingApp() : App("Volumetric Lighting Example") {
         g_buffer_gather_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
                 .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/volumetric_lighting/g_buffer_gather.glsl" }, },
@@ -542,7 +542,7 @@ struct VolumetricLightingApp : public App {
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
 
-            ImGui::Begin("directional shadow settings");
+            ImGui::Begin("volumetric lighting settings");
             ImGui::DragFloat3("direction", &direction.x);
             ImGui::DragFloat("bias", &bias, 0.0001f, 0.0000001f, 0.1f);
             if(ImGui::Checkbox("use pcf", &use_pcf)) {
@@ -593,6 +593,22 @@ struct VolumetricLightingApp : public App {
                 .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT,
             });
             task_depth_image.set_images({.images = std::span{&depth_image, 1}});
+
+            device.destroy_image(albedo_image);
+            albedo_image = device.create_image({
+                .format = swapchain.get_format(),
+                .size = { size_x, size_y, 1 },
+                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
+            });
+            task_albedo_image.set_images({.images = std::span{&albedo_image, 1}});
+
+            device.destroy_image(normal_image);
+            normal_image = device.create_image({
+                .format = daxa::Format::R16G16B16A16_SFLOAT,
+                .size = { size_x, size_y, 1 },
+                .usage = daxa::ImageUsageFlagBits::COLOR_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
+            });
+            task_normal_image.set_images({.images = std::span{&normal_image, 1}});
 
             camera.camera.resize(size_x, size_y);
         }

@@ -489,7 +489,7 @@ struct ReflectiveShadowApp : public App {
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
 
-            ImGui::Begin("directional shadow settings");
+            ImGui::Begin("reflective shadow settings");
             ImGui::DragFloat3("direction", &direction.x);
             ImGui::DragFloat("bias", &bias, 0.0001f, 0.0000001f, 0.1f);
             if(ImGui::Checkbox("use pcf", &use_pcf) || ImGui::Checkbox("apply gi", &apply_gi)) {

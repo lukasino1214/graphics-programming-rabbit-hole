@@ -44,4 +44,6 @@ make_example(variance_shadow)
 make_example(fxaa)
 make_example(reflective_shadow_mapping)
 make_example(volumetric_lighting)
-
+make_example(percentage_closer_soft_shadows)
+make_example(exponential_shadow_mapping)
+make_example(exponential_variance_shadow_mapping)

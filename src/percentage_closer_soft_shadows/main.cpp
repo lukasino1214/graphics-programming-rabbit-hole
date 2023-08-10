@@ -28,7 +28,7 @@ struct RenderShadowTask {
     std::string_view name = "render shadow";
     RasterPipelineHolder* pipeline = {};
     std::vector<ModelHolder>* models = {};
-    glm::mat4* light_matrix = {};
+    daxa::BufferId light_buffer = {};
 
     void callback(daxa::TaskInterface ti) {
         daxa::CommandList cmd_list = ti.get_command_list();
@@ -39,18 +39,16 @@ struct RenderShadowTask {
                 .load_op = daxa::AttachmentLoadOp::CLEAR,
                 .clear_value = daxa::DepthValue{1.0f, 0},
             }},
-            .render_area = {.x = 0, .y = 0, .width = 1024, .height = 1024},
+            .render_area = {.x = 0, .y = 0, .width = 256, .height = 256},
         });
         cmd_list.set_pipeline(*pipeline->pipeline);
-
-        glm::mat4 shadow_mvp = *light_matrix;
 
         for(auto& m : *models) {
             auto& model = m.model;
 
             for(auto& primitive : model->primitives) {
                 cmd_list.push_constant(ShadowPush {
-                    .mvp = *reinterpret_cast<f32mat4x4*>(&shadow_mvp),
+                    .light_buffer = ti.get_device().get_device_address(light_buffer),
                     .object_info = ti.get_device().get_device_address(m.object_buffer),
                     .vertices = ti.get_device().get_device_address(model->vertex_buffer),
                 });
@@ -93,8 +91,6 @@ struct RenderTask {
     daxa::BufferId light_buffer = {};
     daxa::ImGuiRenderer imgui_renderer = {};
 
-    f32* bias = {};
-    i32* pcf_range = {};
     f32* shadow_intensity = {};
 
     void callback(daxa::TaskInterface ti) {
@@ -130,8 +126,6 @@ struct RenderTask {
                     .materials = ti.get_device().get_device_address(model->material_buffer),
                     .material_index = primitive.material_index,
                     .light_buffer = ti.get_device().get_device_address(light_buffer),
-                    .bias = *bias,
-                    .pcf_range = *pcf_range,
                     .shadow_intensity = *shadow_intensity,
                     .camera_position = *reinterpret_cast<f32vec3*>(&camera->position)
                 });
@@ -162,7 +156,7 @@ struct RenderTask {
     }
 };
 
-struct SpotShadowApp : public App {
+struct PercentageCloserSoftShadowsApp : public App {
     std::vector<ModelHolder> models = {};
     RasterPipelineHolder raster_pipeline = {};
     RasterPipelineHolder shadow_pipeline = {};
@@ -174,6 +168,7 @@ struct SpotShadowApp : public App {
     daxa::TaskImage task_shadow_image = {};
 
     daxa::SamplerId shadow_sampler = {};
+    daxa::SamplerId image_sampler = {};
     daxa::BufferId light_buffer = {};
 
     glm::mat4 light_matrix = {};
@@ -185,12 +180,13 @@ struct SpotShadowApp : public App {
     f64 delta_time;
     bool paused = false;
 
-    bool use_pcf = false;
-    glm::vec3 position{0.0f, 10.0f, 0.0f};
-    glm::vec3 direction = { 1.0f, 0.0f, 0.0f };
+    bool use_pcss = false;
+    glm::vec3 position{8.0f, 8.0f, 0.0f};
+    glm::vec3 direction = { 1.0f, 0.0f, -45.0f };
     f32 inner_cut_off = 8.0f;
-    f32 outer_cut_off = 16.0f;
+    f32 outer_cut_off = 24.0f;
     f32 bias = 0.0001f;
+    f32 light_size = 0.13333333333f;
     i32 pcf_range = 1;
     f32 shadow_intensity = 0.1f;
     f32 light_intensity = 512.0f;
@@ -200,15 +196,15 @@ struct SpotShadowApp : public App {
     daxa::TaskImage task_swapchain_image = {};
     daxa::TaskGraph render_task_graph = {};
 
-    SpotShadowApp() : App("Spot shadow Example") {
+    PercentageCloserSoftShadowsApp() : App("Percentage Close Soft Shadows Example") {
         raster_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/spot_shadow/shader.glsl" }, },
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/percentage_closer_soft_shadows/shader.glsl" }, },
             },
             .fragment_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/spot_shadow/shader.glsl" }, },
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/percentage_closer_soft_shadows/shader.glsl" }, },
                 .compile_options = {
-                    .defines = { { .name = "USE_PCF", .value = "0" } }
+                    .defines = { { .name = "USE_PCSS", .value = "0" } }
                 } 
             },
             .color_attachments = {{ .format = swapchain.get_format() }},
@@ -226,10 +222,10 @@ struct SpotShadowApp : public App {
 
         shadow_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
             .vertex_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/spot_shadow/shadow.glsl" }, },
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/percentage_closer_soft_shadows/shadow.glsl" }, },
             },
             .fragment_shader_info = daxa::ShaderCompileInfo {
-                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/spot_shadow/shadow.glsl" }, },
+                .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/percentage_closer_soft_shadows/shadow.glsl" }, },
             },
             .depth_test = {
                 .depth_attachment_format = daxa::Format::D32_SFLOAT,
@@ -262,7 +258,7 @@ struct SpotShadowApp : public App {
 
         shadow_image = device.create_image({
             .format = daxa::Format::D32_SFLOAT,
-            .size = {1024, 1024, 1},
+            .size = {256, 256, 1},
             .usage = daxa::ImageUsageFlagBits::DEPTH_STENCIL_ATTACHMENT | daxa::ImageUsageFlagBits::SHADER_SAMPLED,
             .name = "shadow image"
         });
@@ -285,6 +281,24 @@ struct SpotShadowApp : public App {
             .max_anisotropy = 16.0f,
             .enable_compare = true,
             .compare_op = daxa::CompareOp::LESS,
+            .min_lod = 0.0f,
+            .max_lod = 1.0f,
+            .border_color = daxa::BorderColor::FLOAT_OPAQUE_WHITE,
+            .enable_unnormalized_coordinates = false,
+        });
+
+        image_sampler = device.create_sampler(daxa::SamplerInfo {
+            .magnification_filter = daxa::Filter::LINEAR,
+            .minification_filter = daxa::Filter::LINEAR,
+            .mipmap_filter = daxa::Filter::LINEAR,
+            .address_mode_u = daxa::SamplerAddressMode::CLAMP_TO_BORDER,
+            .address_mode_v = daxa::SamplerAddressMode::CLAMP_TO_BORDER,
+            .address_mode_w = daxa::SamplerAddressMode::CLAMP_TO_BORDER,
+            .mip_lod_bias = 0.0f,
+            .enable_anisotropy = true,
+            .max_anisotropy = 16.0f,
+            .enable_compare = false,
+            .compare_op = daxa::CompareOp::ALWAYS,
             .min_lod = 0.0f,
             .max_lod = 1.0f,
             .border_color = daxa::BorderColor::FLOAT_OPAQUE_WHITE,
@@ -330,7 +344,7 @@ struct SpotShadowApp : public App {
         {
             auto* ptr = device.get_host_address_as<ObjectInfo>(helmet_buffer);
 
-            glm::mat4 model_matrix = glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 2.0f, 0.0f}) * glm::scale(glm::mat4{1.0f}, glm::vec3{1.f, 1.f, 1.f});
+            glm::mat4 model_matrix = glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, 2.0f, 0.0f}) * glm::scale(glm::mat4{1.0f}, glm::vec3{1.0f, 1.0f, 1.0f});
             glm::mat4 normal_matrix = glm::transpose(glm::inverse(model_matrix));
 
             ptr->model_matrix = *reinterpret_cast<f32mat4x4*>(&model_matrix);
@@ -367,7 +381,7 @@ struct SpotShadowApp : public App {
             },
             .pipeline = &shadow_pipeline,
             .models = &models,
-            .light_matrix = &light_matrix
+            .light_buffer = light_buffer
         });
 
         render_task_graph.add_task(RenderTask {
@@ -381,8 +395,6 @@ struct SpotShadowApp : public App {
             .models = &models,
             .light_buffer = light_buffer,
             .imgui_renderer = imgui_renderer,
-            .bias = &bias,
-            .pcf_range = &pcf_range,
             .shadow_intensity = &shadow_intensity,
         });
 
@@ -391,10 +403,11 @@ struct SpotShadowApp : public App {
         render_task_graph.complete({});
     }
 
-    ~SpotShadowApp() {
+    ~PercentageCloserSoftShadowsApp() {
         device.destroy_image(depth_image);
         device.destroy_image(shadow_image);
         device.destroy_sampler(shadow_sampler);
+        device.destroy_sampler(image_sampler);
         device.destroy_buffer(light_buffer);
 
         for(auto& m : models) {
@@ -421,14 +434,19 @@ struct SpotShadowApp : public App {
 
         {
             auto* ptr = device.get_host_address_as<LightInfo>(light_buffer);
-            ptr->light_matrix = *reinterpret_cast<f32mat4x4*>(&light_matrix);
+            ptr->projection_matrix = *reinterpret_cast<f32mat4x4*>(&light_projection);
+            ptr->view_matrix = *reinterpret_cast<f32mat4x4*>(&light_view);
             ptr->shadow_image = shadow_image.default_view();
             ptr->shadow_sampler = shadow_sampler;
+            ptr->image_sampler = image_sampler;
             ptr->position = *reinterpret_cast<f32vec3*>(&position);
             ptr->direction = *reinterpret_cast<f32vec3*>(&dir);
             ptr->inner_cut_off = glm::cos(glm::radians(inner_cut_off));
             ptr->outer_cut_off = glm::cos(glm::radians(outer_cut_off));
             ptr->intensity = light_intensity;
+            ptr->bias = bias;
+            ptr->light_size = light_size;
+            ptr->pcf_range = pcf_range;
         }
 
         render_task_graph.execute({});
@@ -452,18 +470,19 @@ struct SpotShadowApp : public App {
             ImGui::DragFloat("outer cut off", &outer_cut_off);
             ImGui::DragFloat("light intensity", &light_intensity);
             ImGui::DragFloat("bias", &bias, 0.0001f, 0.0000001f, 0.1f);
-            if(ImGui::Checkbox("use pcf", &use_pcf)) {
-                daxa::ShaderDefine pcf_mode = { .name = "USE_PCF", .value = "0" };
-                if(use_pcf) {
+            ImGui::DragFloat("light size", &light_size, 0.0001f, 0.0000001f, 2.0f);
+            if(ImGui::Checkbox("use pcss", &use_pcss)) {
+                daxa::ShaderDefine pcf_mode = { .name = "USE_PCSS", .value = "0" };
+                if(use_pcss) {
                     pcf_mode.value = "1";
                 }
 
                 raster_pipeline.pipeline = pipeline_manager.add_raster_pipeline(daxa::RasterPipelineCompileInfo {
                     .vertex_shader_info = daxa::ShaderCompileInfo {
-                        .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/spot_shadow/shader.glsl" }, },
+                        .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/percentage_closer_soft_shadows/shader.glsl" }, },
                     },
                     .fragment_shader_info = daxa::ShaderCompileInfo {
-                        .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/spot_shadow/shader.glsl" }, },
+                        .source = daxa::ShaderSource { daxa::ShaderFile { .path = "src/percentage_closer_soft_shadows/shader.glsl" }, },
                         .compile_options = {
                             .defines = { pcf_mode }
                         } 
@@ -539,7 +558,7 @@ struct SpotShadowApp : public App {
 };
 
 auto main() -> i32 {
-    SpotShadowApp app;
+    PercentageCloserSoftShadowsApp app;
     app.update();
     return 0;
 }
